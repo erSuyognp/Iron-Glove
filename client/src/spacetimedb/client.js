@@ -23,12 +23,18 @@ function toWs(host) {
   return host;
 }
 
-// opts: { playerId, mode, onStatus(status), onPlayer(row) }
+// opts: { playerId, mode, onStatus(status), onPlayer(row), onPlayerLeave(row) }
+//
+// `playerId` is only our own identity (used for join_game / pushTransform).
+// `onPlayer` is fired for EVERY player_state row — ours and every other pilot
+// (e.g. the judge phone) — so the caller can render all suits. `onPlayerLeave`
+// fires when a row is deleted.
 export function createStdbClient({
   playerId = 'suyog',
   mode = 'KEYBOARD',
   onStatus,
   onPlayer,
+  onPlayerLeave,
 } = {}) {
   let conn = null;
   let connected = false; // socket open
@@ -39,7 +45,7 @@ export function createStdbClient({
   };
 
   function handleRow(row) {
-    if (row.playerId === playerId && onPlayer) onPlayer(row);
+    if (onPlayer) onPlayer(row);
   }
 
   function start() {
@@ -53,9 +59,13 @@ export function createStdbClient({
           connected = true;
           status('connected');
 
-          // Read our row back whenever the server broadcasts a delta.
+          // Read rows back whenever the server broadcasts a delta — every
+          // player, not just ours, so remote suits (the judge) render too.
           c.db.playerState.onInsert((_ctx, row) => handleRow(row));
           c.db.playerState.onUpdate((_ctx, _old, row) => handleRow(row));
+          c.db.playerState.onDelete((_ctx, row) => {
+            if (onPlayerLeave) onPlayerLeave(row);
+          });
 
           c.subscriptionBuilder()
             .onApplied(() => {

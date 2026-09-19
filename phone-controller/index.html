@@ -1,109 +1,665 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Iron Glove — Suit Controller</title>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+  />
+  <meta name="theme-color" content="#05070d" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>IRON GLOVE — Suit Controller</title>
+
+  <!--
+    IRON GLOVE — Phase 3: Judge phone controller (single standalone file, no build step).
+
+    What it does:
+      1. Shows a big ACTIVATE SUIT button. On tap it runs the iOS 13+
+         DeviceOrientationEvent.requestPermission() gate (a no-op on Android /
+         older iOS, which never require it).
+      2. Connects to the existing SpacetimeDB module and calls the join_game
+         reducer with player_id 'judge' and mode 'PHONE'.
+      3. Streams the phone's deviceorientation (pitch=beta, roll=gamma,
+         yaw=alpha) to the update_orientation reducer at ~30 Hz.
+
+    Note on positions: the Phase 2 update_orientation reducer also carries
+    position_x/y/z (physics is client-side; the server is a dumb store) and only
+    updates a row that already exists — hence join_game first. So we also run a
+    light client-side flight integrator here (tilt to fly) so the judge's suit
+    actually translates over the campus, exactly like the laptop client does for
+    its own row.
+
+    SpacetimeDB SDK: loaded from esm.sh (the unified `spacetimedb` 2.10 package,
+    browser build, deps bundled). We reconstruct the tiny slice of the generated
+    module bindings we need — the player_state table + the join_game /
+    update_orientation reducer arg schemas — so a no-build page can call the
+    reducers with the same camelCased accessors the laptop client uses.
+
+    Host: the laptop client reads VITE_SPACETIMEDB_HOST at build time. A static
+    file has no bundler to inject env, so the same value is the STDB_HOST default
+    below and is overridable at runtime via ?host= / ?db= query params (great for
+    encoding into the judge's QR code) or the CONFIG panel, persisted to
+    localStorage. iOS gyro requires the page be served over HTTPS, and an HTTPS
+    page can only open a wss:// socket (not ws://) — point STDB_HOST at your
+    maincloud/LAN wss host for a real phone.
+  -->
   <style>
+    :root {
+      --bg: #05070d;
+      --panel: rgba(12, 17, 28, 0.72);
+      --edge: rgba(120, 160, 200, 0.16);
+      --cyan: #37e7ff;
+      --cyan-dim: #1c6c7e;
+      --gold: #f5b83d;
+      --gold-dim: #7a5b1c;
+      --red: #ff4d3d;
+      --text: #cfe6f0;
+      --dim: #6d8296;
+      --ok: #46e5a0;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background:
+        radial-gradient(120% 90% at 50% -10%, #0d1524 0%, #070a12 45%, #04060b 100%);
+      color: var(--text);
+      font-family: "Rajdhani", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+      overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
     body {
-      background: #0a0e1a;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      height: 100vh;
-      font-family: 'Courier New', monospace;
-      color: #00ccff;
+      min-height: 100%;
+      padding: max(18px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
+      position: relative;
+      overflow: hidden;
     }
-    #activate-btn {
-      background: transparent;
-      border: 2px solid #00ccff;
-      color: #00ccff;
-      font-size: 20px;
-      letter-spacing: 3px;
-      padding: 20px 40px;
-      border-radius: 8px;
+
+    /* faint hex-grid ambience */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: -40%;
+      background-image:
+        linear-gradient(rgba(55, 231, 255, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(55, 231, 255, 0.05) 1px, transparent 1px);
+      background-size: 34px 34px;
+      transform: perspective(500px) rotateX(58deg) translateY(12%);
+      mask-image: radial-gradient(60% 60% at 50% 30%, #000 0%, transparent 75%);
+      -webkit-mask-image: radial-gradient(60% 60% at 50% 30%, #000 0%, transparent 75%);
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
+    .brand {
+      text-align: center;
+      margin-top: 6px;
+      letter-spacing: 8px;
+      font-size: 30px;
+      font-weight: 700;
+      color: var(--gold);
+      text-shadow: 0 0 18px rgba(245, 184, 61, 0.35);
+    }
+    .brand small { display:block; letter-spacing: 6px; font-size: 11px; color: var(--cyan); margin-top: 6px; opacity: 0.85; }
+
+    /* ---- Reticle / attitude indicator ---- */
+    .reticle-wrap {
+      position: relative;
+      width: min(72vw, 300px);
+      aspect-ratio: 1;
+      margin: 26px 0 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ring {
+      position: absolute;
+      border-radius: 50%;
+      border: 1px solid var(--edge);
+    }
+    .ring.r1 { inset: 0; border-color: rgba(55,231,255,0.22); box-shadow: 0 0 40px rgba(55,231,255,0.08) inset; }
+    .ring.r2 { inset: 10%; border-style: dashed; border-color: rgba(245,184,61,0.22); animation: spin 34s linear infinite; }
+    .ring.r3 { inset: 26%; border-color: rgba(55,231,255,0.15); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* the horizon tilts with roll and slides with pitch */
+    .horizon {
+      position: absolute;
+      inset: 26%;
+      border-radius: 50%;
+      overflow: hidden;
+      background: radial-gradient(circle at 50% 50%, rgba(55,231,255,0.06), transparent 70%);
+      transition: transform 0.05s linear;
+    }
+    .horizon::before {
+      content: "";
+      position: absolute;
+      left: -30%; right: -30%; top: 50%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+      box-shadow: 0 0 10px var(--cyan);
+    }
+    .horizon .lad { position:absolute; left:20%; right:20%; height:1px; background: rgba(55,231,255,0.35); }
+    .horizon .lad.u { top: 30%; } .horizon .lad.d { top: 70%; }
+
+    .core {
+      position: relative;
+      width: 34%;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: radial-gradient(circle at 50% 45%, #eafff9 0%, #3ff0ff 22%, #0b90b8 55%, #073947 100%);
+      box-shadow: 0 0 24px rgba(55,231,255,0.55), 0 0 60px rgba(55,231,255,0.25);
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .core.hot {
+      background: radial-gradient(circle at 50% 45%, #fff2ea 0%, #ffb347 20%, #ff5b2e 52%, #7a1405 100%);
+      box-shadow: 0 0 30px rgba(255,90,45,0.6), 0 0 80px rgba(255,90,45,0.3);
+      animation: throb 1.4s ease-in-out infinite;
+    }
+    @keyframes throb { 50% { box-shadow: 0 0 44px rgba(255,120,60,0.85), 0 0 110px rgba(255,90,45,0.4); } }
+    .core span { font-size: 10px; letter-spacing: 2px; color: #04121a; font-weight: 700; }
+    .core.hot span { color: #2a0a02; }
+
+    /* crosshair marks fixed over the reticle */
+    .cross { position:absolute; background: var(--gold); box-shadow: 0 0 8px var(--gold); }
+    .cross.h { width: 22px; height: 2px; } .cross.v { width: 2px; height: 22px; }
+
+    /* ---- Big activate button ---- */
+    #activate {
+      margin-top: 10px;
+      width: min(86vw, 360px);
+      padding: 22px 20px;
+      font-family: inherit;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 5px;
+      color: var(--gold);
+      background: linear-gradient(180deg, rgba(245,184,61,0.10), rgba(245,184,61,0.02));
+      border: 2px solid var(--gold);
+      border-radius: 12px;
+      box-shadow: 0 0 22px rgba(245,184,61,0.18), inset 0 0 22px rgba(245,184,61,0.06);
       cursor: pointer;
-      animation: pulse 2s infinite;
+      transition: transform 0.08s, box-shadow 0.2s, opacity 0.2s;
+      animation: pulse 2.2s infinite;
+    }
+    #activate:active { transform: scale(0.98); }
+    #activate[disabled] { opacity: 0.55; animation: none; }
+    #activate.active {
+      color: var(--red);
+      border-color: var(--red);
+      box-shadow: 0 0 26px rgba(255,77,61,0.28), inset 0 0 22px rgba(255,77,61,0.08);
+      animation: none;
     }
     @keyframes pulse {
-      0%, 100% { box-shadow: 0 0 10px #00ccff44; }
-      50%       { box-shadow: 0 0 30px #00ccff99; }
+      0%, 100% { box-shadow: 0 0 16px rgba(245,184,61,0.14), inset 0 0 22px rgba(245,184,61,0.05); }
+      50%      { box-shadow: 0 0 34px rgba(245,184,61,0.34), inset 0 0 22px rgba(245,184,61,0.10); }
     }
-    #status { margin-top: 20px; font-size: 12px; opacity: 0.6; }
-    #orient { margin-top: 12px; font-size: 11px; opacity: 0.4; font-family: monospace; }
+
+    #status { margin-top: 16px; font-size: 14px; letter-spacing: 2px; color: var(--cyan); min-height: 18px; text-align:center; }
+    #hint { margin-top: 6px; font-size: 11px; letter-spacing: 1px; color: var(--dim); text-align:center; max-width: 320px; }
+
+    /* ---- Telemetry ---- */
+    .telem {
+      margin-top: 18px;
+      width: min(92vw, 380px);
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      background: var(--panel);
+      border: 1px solid var(--edge);
+      border-radius: 10px;
+      padding: 12px;
+      backdrop-filter: blur(4px);
+    }
+    .cell { text-align: center; }
+    .cell .k { font-size: 9px; letter-spacing: 2px; color: var(--dim); }
+    .cell .v { font-size: 18px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+    .cell .v.small { font-size: 14px; }
+
+    .bars { width: min(92vw, 380px); margin-top: 8px; display:flex; flex-direction: column; gap: 6px; }
+    .bar { display:flex; align-items:center; gap: 8px; font-size: 9px; letter-spacing: 2px; color: var(--dim); }
+    .bar .track { flex:1; height: 8px; border-radius: 5px; background: rgba(120,160,200,0.12); overflow:hidden; position: relative; }
+    .bar .fill { position:absolute; top:0; bottom:0; left:50%; width:0; background: linear-gradient(90deg, var(--cyan-dim), var(--cyan)); box-shadow: 0 0 8px var(--cyan); }
+    .bar.thr .fill { background: linear-gradient(90deg, var(--gold-dim), var(--gold)); box-shadow: 0 0 8px var(--gold); }
+
+    .footer { margin-top: auto; padding-top: 14px; display:flex; gap: 14px; align-items:center; font-size: 11px; letter-spacing: 2px; }
+    .link { color: var(--dim); text-decoration: none; border-bottom: 1px dashed rgba(109,130,150,0.5); cursor: pointer; }
+    .link:active { color: var(--cyan); }
+    #link-state { display:flex; align-items:center; gap:6px; color: var(--dim); }
+    #link-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); box-shadow: 0 0 6px currentColor; }
+
+    /* ---- Config panel ---- */
+    #config { position: fixed; inset: 0; background: rgba(4,6,11,0.9); backdrop-filter: blur(6px); display:none; align-items:center; justify-content:center; padding: 24px; z-index: 20; }
+    #config.open { display:flex; }
+    .cfg-card { width: min(92vw, 380px); background: var(--panel); border: 1px solid var(--edge); border-radius: 12px; padding: 20px; }
+    .cfg-card h3 { margin: 0 0 14px; letter-spacing: 3px; color: var(--gold); font-size: 15px; }
+    .cfg-card label { display:block; font-size: 10px; letter-spacing: 2px; color: var(--dim); margin: 12px 0 5px; }
+    .cfg-card input {
+      width: 100%; padding: 11px 12px; font-family: inherit; font-size: 14px;
+      color: var(--text); background: #0a0f19; border: 1px solid var(--edge); border-radius: 8px; outline: none;
+    }
+    .cfg-card input:focus { border-color: var(--cyan); }
+    .cfg-actions { display:flex; gap: 10px; margin-top: 18px; }
+    .cfg-actions button { flex:1; padding: 12px; font-family: inherit; font-weight: 700; letter-spacing: 2px; border-radius: 8px; cursor: pointer; }
+    .btn-save { color: #04121a; background: var(--cyan); border: none; }
+    .btn-cancel { color: var(--dim); background: transparent; border: 1px solid var(--edge); }
+    .cfg-note { font-size: 10px; color: var(--dim); margin-top: 12px; line-height: 1.5; }
   </style>
 </head>
 <body>
-  <div style="font-size: 28px; font-weight: bold; margin-bottom: 8px;">IRON GLOVE</div>
-  <div style="color: #c8a020; letter-spacing: 4px; margin-bottom: 60px;">JUDGE CONTROLLER</div>
-  <button id="activate-btn" onclick="activateSuit()">ACTIVATE SUIT</button>
-  <div id="status">Waiting for activation...</div>
-  <div id="orient"></div>
+  <div class="brand">IRON GLOVE<small>JUDGE · SUIT CONTROLLER</small></div>
+
+  <div class="reticle-wrap" aria-hidden="true">
+    <div class="ring r1"></div>
+    <div class="ring r2"></div>
+    <div class="ring r3"></div>
+    <div class="horizon" id="horizon">
+      <div class="lad u"></div>
+      <div class="lad d"></div>
+    </div>
+    <div class="core" id="core"><span id="core-label">STANDBY</span></div>
+    <div class="cross h"></div>
+    <div class="cross v"></div>
+  </div>
+
+  <button id="activate">ACTIVATE SUIT</button>
+  <div id="status">Awaiting activation…</div>
+  <div id="hint">Tap ACTIVATE, allow motion access, then hold the phone flat and tilt to fly.</div>
+
+  <div class="telem">
+    <div class="cell"><div class="k">PITCH</div><div class="v" id="t-pitch">—</div></div>
+    <div class="cell"><div class="k">ROLL</div><div class="v" id="t-roll">—</div></div>
+    <div class="cell"><div class="k">YAW</div><div class="v" id="t-yaw">—</div></div>
+    <div class="cell"><div class="k">ALT (m)</div><div class="v small" id="t-alt">—</div></div>
+    <div class="cell"><div class="k">SPD (m/s)</div><div class="v small" id="t-spd">—</div></div>
+    <div class="cell"><div class="k">MODE</div><div class="v small" id="t-mode">PHONE</div></div>
+  </div>
+
+  <div class="bars">
+    <div class="bar thr"><span>THR</span><div class="track"><div class="fill" id="bar-thr"></div></div></div>
+    <div class="bar"><span>CLB</span><div class="track"><div class="fill" id="bar-clb"></div></div></div>
+  </div>
+
+  <div class="footer">
+    <span class="link" id="calibrate">⊕ CALIBRATE</span>
+    <span class="link" id="open-config">⚙ LINK</span>
+    <span id="link-state"><span id="link-dot"></span><span id="link-text">OFFLINE</span></span>
+  </div>
+
+  <!-- Config overlay -->
+  <div id="config">
+    <div class="cfg-card">
+      <h3>SPACETIMEDB LINK</h3>
+      <label for="cfg-host">HOST (ws:// or wss://)</label>
+      <input id="cfg-host" autocomplete="off" autocapitalize="off" spellcheck="false" />
+      <label for="cfg-db">DATABASE / MODULE NAME</label>
+      <input id="cfg-db" autocomplete="off" autocapitalize="off" spellcheck="false" />
+      <div class="cfg-actions">
+        <button class="btn-cancel" id="cfg-cancel">CANCEL</button>
+        <button class="btn-save" id="cfg-save">SAVE</button>
+      </div>
+      <div class="cfg-note">
+        Saved on this device. You can also pass <b>?host=…&amp;db=…</b> in the URL
+        (handy for the QR code). iOS gyro needs HTTPS, and an HTTPS page can only
+        reach a <b>wss://</b> host.
+      </div>
+    </div>
+  </div>
 
   <script type="module">
-    const STDB_HOST   = 'wss://maincloud.spacetimedb.com';
-    const STDB_DB     = 'iron-glove-suyog';
+    import {
+      DbConnectionBuilder,
+      DbConnectionImpl,
+      SubscriptionBuilderImpl,
+      schema,
+      table,
+      t,
+      reducers as reducersFn,
+      reducerSchema,
+      procedures as proceduresFn,
+    } from "https://esm.sh/spacetimedb@2.10.1?bundle";
 
-    let client = null;
+    /* ----------------------------------------------------------------------
+       CONFIG — mirrors the laptop client's VITE_SPACETIMEDB_HOST / _DB_NAME.
+       Static file → no build-time env injection, so these are the defaults,
+       overridable via ?host= / ?db= query params or the LINK config panel.
+    ---------------------------------------------------------------------- */
+    const DEFAULT_HOST = "ws://127.0.0.1:3000"; // = VITE_SPACETIMEDB_HOST default
+    const DEFAULT_DB = "iron-glove";            // = VITE_SPACETIMEDB_DB_NAME default
 
-    window.activateSuit = async function () {
-      // iOS permission gate
-      if (typeof DeviceOrientationEvent !== 'undefined'
-          && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        const perm = await DeviceOrientationEvent.requestPermission();
-        if (perm !== 'granted') {
-          document.getElementById('status').textContent = 'Permission denied.';
-          return;
+    const PLAYER_ID = "judge";
+    const MODE = "PHONE";
+
+    // Spawn point (matches the server's join_game): the JHU Homewood quad.
+    // Repo convention: position_x = longitude, position_y = altitude, position_z = latitude.
+    const SPAWN = { lon: -76.6205, alt: 150.0, lat: 39.3299 };
+
+    // Flight feel (kept light; the laptop stays the reference client).
+    const MAX_SPEED = 70;   // m/s at full forward tilt
+    const MAX_CLIMB = 30;   // m/s at full back/forward tilt
+    const SPEED_LERP = 0.08; // weighted, matches the suit's 0.08 lerp
+    const ALT_MIN = 25, ALT_MAX = 900;
+    const DEADZONE = 4;      // deg of tilt ignored around neutral
+    const TILT_FULL = 34;    // deg of tilt = full input
+    const SEND_MS = 33;      // ~30 Hz
+    const M_PER_DEG_LAT = 111320;
+
+    /* ---------- runtime config helpers ---------- */
+    const qs = new URLSearchParams(location.search);
+    function loadCfg() {
+      let host = qs.get("host") || localStorage.getItem("ig_host") || DEFAULT_HOST;
+      let db = qs.get("db") || localStorage.getItem("ig_db") || DEFAULT_DB;
+      return { host, db };
+    }
+    function saveCfg(host, db) {
+      try { localStorage.setItem("ig_host", host); localStorage.setItem("ig_db", db); } catch {}
+    }
+    function toWs(host) {
+      host = host.trim();
+      if (host.startsWith("ws")) return host;
+      if (host.startsWith("https://")) return "wss://" + host.slice(8);
+      if (host.startsWith("http://")) return "ws://" + host.slice(7);
+      return host;
+    }
+
+    /* ----------------------------------------------------------------------
+       Minimal reconstruction of the generated module bindings — just enough to
+       call join_game + update_orientation. Field/column names and shapes are
+       copied verbatim from client/src/module_bindings so the wire format and
+       the camelCased reducer accessors (joinGame / updateOrientation) match.
+    ---------------------------------------------------------------------- */
+    const PlayerStateRow = t.row({
+      playerId: t.string().primaryKey().name("player_id"),
+      positionX: t.f32().name("position_x"),
+      positionY: t.f32().name("position_y"),
+      positionZ: t.f32().name("position_z"),
+      pitch: t.f32(),
+      roll: t.f32(),
+      yaw: t.f32(),
+      suitHealth: t.f32().name("suit_health"),
+      mode: t.string(),
+      isConnected: t.bool().name("is_connected"),
+      updatedAt: t.timestamp().name("updated_at"),
+    });
+
+    const JoinGameArgs = { playerId: t.string(), mode: t.string() };
+    const UpdateOrientationArgs = {
+      playerId: t.string(),
+      positionX: t.f32(), positionY: t.f32(), positionZ: t.f32(),
+      pitch: t.f32(), roll: t.f32(), yaw: t.f32(),
+      mode: t.string(),
+    };
+
+    const tablesSchema = schema({
+      playerState: table(
+        {
+          name: "player_state",
+          indexes: [{ accessor: "player_id", name: "player_state_player_id_idx_btree", algorithm: "btree", columns: ["playerId"] }],
+          constraints: [{ name: "player_state_player_id_key", constraint: "unique", columns: ["playerId"] }],
+        },
+        PlayerStateRow
+      ),
+    });
+
+    const reducersSchema = reducersFn(
+      reducerSchema("join_game", JoinGameArgs),
+      reducerSchema("update_orientation", UpdateOrientationArgs)
+    );
+
+    const proceduresSchema = proceduresFn();
+
+    const REMOTE_MODULE = {
+      versionInfo: { cliVersion: "2.10.1" },
+      tables: tablesSchema.schemaType.tables,
+      reducers: reducersSchema.reducersType.reducers,
+      ...proceduresSchema,
+    };
+
+    class DbConnection extends DbConnectionImpl {
+      static builder = () => new DbConnectionBuilder(REMOTE_MODULE, (config) => new DbConnection(config));
+      subscriptionBuilder = () => new SubscriptionBuilderImpl(this);
+    }
+
+    /* ---------- DOM ---------- */
+    const $ = (id) => document.getElementById(id);
+    const els = {
+      activate: $("activate"), status: $("status"), hint: $("hint"),
+      core: $("core"), coreLabel: $("core-label"), horizon: $("horizon"),
+      pitch: $("t-pitch"), roll: $("t-roll"), yaw: $("t-yaw"),
+      alt: $("t-alt"), spd: $("t-spd"),
+      barThr: $("bar-thr"), barClb: $("bar-clb"),
+      calibrate: $("calibrate"), openConfig: $("open-config"),
+      linkDot: $("link-dot"), linkText: $("link-text"),
+      config: $("config"), cfgHost: $("cfg-host"), cfgDb: $("cfg-db"),
+      cfgSave: $("cfg-save"), cfgCancel: $("cfg-cancel"),
+    };
+
+    function setStatus(msg) { els.status.textContent = msg; }
+    function setLink(state) {
+      // state: offline | connecting | online | error
+      const map = {
+        offline: ["OFFLINE", "var(--dim)"],
+        connecting: ["CONNECTING", "var(--gold)"],
+        online: ["ONLINE", "var(--ok)"],
+        error: ["LINK ERROR", "var(--red)"],
+      };
+      const [text, color] = map[state] || map.offline;
+      els.linkText.textContent = text;
+      els.linkDot.style.color = color;
+      els.linkText.style.color = color;
+    }
+
+    /* ---------- flight state ---------- */
+    const pos = { lon: SPAWN.lon, alt: SPAWN.alt, lat: SPAWN.lat };
+    let heading = 0;         // deg, from alpha
+    let speed = 0;           // m/s (weighted)
+    let neutral = null;      // { beta } captured on activation / calibrate
+    let orient = { beta: 0, gamma: 0, alpha: 0, has: false };
+    let active = false;
+    let conn = null, online = false;
+    let sendTimer = null, lastTick = 0;
+
+    function dz(v) { return Math.abs(v) < DEADZONE ? 0 : v - Math.sign(v) * DEADZONE; }
+    function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+    function onOrientation(e) {
+      if (e.alpha == null && e.beta == null && e.gamma == null) return;
+      orient = { beta: e.beta || 0, gamma: e.gamma || 0, alpha: e.alpha || 0, has: true };
+      if (!neutral) neutral = { beta: orient.beta };
+      // Live reticle feedback (roll tilts, pitch slides) even before flight loop.
+      const rollDeg = clamp(orient.gamma, -45, 45);
+      const pitchOff = clamp((orient.beta - (neutral ? neutral.beta : 0)) * 0.6, -40, 40);
+      els.horizon.style.transform = `rotate(${-rollDeg}deg) translateY(${pitchOff}px)`;
+    }
+
+    function calibrate() {
+      neutral = orient.has ? { beta: orient.beta } : null;
+      setStatus("Neutral set · tilt to fly");
+    }
+
+    /* ---------- flight integration + streaming ---------- */
+    function tick() {
+      const now = performance.now();
+      const dt = lastTick ? Math.min((now - lastTick) / 1000, 0.1) : 0;
+      lastTick = now;
+
+      const n = neutral || { beta: orient.beta };
+      const pitchRel = orient.beta - n.beta;          // + = tilted back
+      const fwdInput = clamp(-dz(pitchRel) / TILT_FULL, -0.4, 1); // tilt forward = accelerate
+      const clbInput = clamp(dz(pitchRel) / TILT_FULL, -1, 1);    // tilt back = climb, fwd = dive
+
+      heading = orient.alpha; // steer by rotating the phone (compass heading)
+
+      // weighted forward speed
+      const targetSpeed = fwdInput * MAX_SPEED;
+      speed += (targetSpeed - speed) * SPEED_LERP;
+
+      if (dt > 0) {
+        const hr = heading * Math.PI / 180;
+        const dNorth = Math.cos(hr) * speed * dt; // metres
+        const dEast = Math.sin(hr) * speed * dt;
+        pos.lat += dNorth / M_PER_DEG_LAT;
+        pos.lon += dEast / (M_PER_DEG_LAT * Math.cos(pos.lat * Math.PI / 180));
+        pos.alt = clamp(pos.alt + clbInput * MAX_CLIMB * dt, ALT_MIN, ALT_MAX);
+      }
+
+      // telemetry (stream the raw device orientation the task asks for)
+      const pitch = orient.beta, roll = orient.gamma, yaw = orient.alpha;
+      els.pitch.textContent = Math.round(pitch);
+      els.roll.textContent = Math.round(roll);
+      els.yaw.textContent = Math.round(yaw);
+      els.alt.textContent = pos.alt.toFixed(0);
+      els.spd.textContent = speed.toFixed(0);
+      els.barThr.style.width = Math.abs(fwdInput) * 50 + "%";
+      els.barThr.style.left = fwdInput >= 0 ? "50%" : (50 - Math.abs(fwdInput) * 50) + "%";
+      els.barClb.style.width = Math.abs(clbInput) * 50 + "%";
+      els.barClb.style.left = clbInput >= 0 ? "50%" : (50 - Math.abs(clbInput) * 50) + "%";
+
+      // stream to SpacetimeDB via update_orientation
+      if (conn && online) {
+        try {
+          conn.reducers.updateOrientation({
+            playerId: PLAYER_ID,
+            positionX: pos.lon,
+            positionY: pos.alt,
+            positionZ: pos.lat,
+            pitch, roll, yaw,
+            mode: MODE,
+          });
+        } catch (err) {
+          console.warn("[ig] update_orientation failed:", err?.message ?? err);
         }
       }
+    }
 
-      document.getElementById('status').textContent = 'Connecting…';
+    /* ---------- connection ---------- */
+    function connect() {
+      const { host, db } = loadCfg();
+      const uri = toWs(host);
+      setLink("connecting");
+      setStatus("Linking to airspace…");
+
+      // Warn on mixed content: https page cannot open a ws:// socket.
+      if (location.protocol === "https:" && uri.startsWith("ws://")) {
+        setStatus("HTTPS page can't reach ws:// — set a wss:// host in ⚙ LINK");
+        setLink("error");
+        return;
+      }
 
       try {
-        const { DbConnection } = await import(
-          'https://cdn.jsdelivr.net/npm/@clockworklabs/spacetimedb-sdk@1/dist/index.browser.mjs'
-        );
-
-        client = DbConnection.builder()
-          .withUri(STDB_HOST)
-          .withDatabaseName(STDB_DB)
-          .onConnect((conn) => {
-            conn.subscriptionBuilder()
-              .onApplied(() => {
-                conn.reducers.join({ name: 'Judge' });
-                document.getElementById('activate-btn').textContent = 'SUIT ACTIVE';
-                document.getElementById('status').textContent = 'Tilt to fly · Fist to blast';
-              })
-              .subscribe(['SELECT * FROM pilot']);
+        conn = DbConnection.builder()
+          .withUri(uri)
+          .withDatabaseName(db)
+          .onConnect((c) => {
+            conn = c;
+            // Create our row at spawn, then start streaming.
+            c.reducers.joinGame({ playerId: PLAYER_ID, mode: MODE });
+            online = true;
+            setLink("online");
+            setStatus("SUIT ONLINE · tilt to fly");
+            startStreaming();
           })
+          .onDisconnect(() => { online = false; setLink("offline"); setStatus("Link dropped."); })
           .onConnectError((_ctx, err) => {
-            document.getElementById('status').textContent = 'Error: ' + (err?.message ?? err);
+            online = false;
+            setLink("error");
+            setStatus("Link error — check ⚙ LINK host.");
+            console.warn("[ig] connect error:", err?.message ?? err);
           })
           .build();
-
-        let lastSend = 0;
-        window.addEventListener('deviceorientation', (e) => {
-          const now = Date.now();
-          if (now - lastSend < 33) return; // ~30 Hz
-          lastSend = now;
-
-          document.getElementById('orient').textContent =
-            `β ${e.beta?.toFixed(1)} γ ${e.gamma?.toFixed(1)} α ${e.alpha?.toFixed(1)}`;
-
-          if (!client) return;
-          // Use the update_pose reducer with phone orientation
-          client.reducers?.updatePose?.({
-            x: 0, y: 0, z: 0,
-            yaw: (e.alpha ?? 0) * Math.PI / 180,
-            thrusting: Math.abs(e.beta ?? 0) > 20,
-          });
-        }, true);
-
       } catch (err) {
-        document.getElementById('status').textContent = 'Failed: ' + err.message;
+        setLink("error");
+        setStatus("Failed to link: " + (err?.message ?? err));
         console.error(err);
       }
-    };
+    }
+
+    function startStreaming() {
+      if (sendTimer) return;
+      lastTick = 0;
+      sendTimer = setInterval(tick, SEND_MS);
+    }
+
+    /* ---------- activation ---------- */
+    async function activateSuit() {
+      if (active) return;
+      els.activate.disabled = true;
+
+      // iOS 13+ permission gate (Android / older iOS: requestPermission is absent).
+      try {
+        const DOE = window.DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === "function") {
+          setStatus("Requesting motion access…");
+          const perm = await DOE.requestPermission();
+          if (perm !== "granted") {
+            setStatus("Motion access denied. Enable it and retry.");
+            els.activate.disabled = false;
+            return;
+          }
+        }
+      } catch (err) {
+        setStatus("Motion access blocked: " + (err?.message ?? err));
+        els.activate.disabled = false;
+        return;
+      }
+
+      if (!window.DeviceOrientationEvent) {
+        setStatus("This device has no orientation sensor.");
+        els.activate.disabled = false;
+        return;
+      }
+
+      window.addEventListener("deviceorientation", onOrientation, true);
+
+      active = true;
+      els.activate.disabled = false;
+      els.activate.classList.add("active");
+      els.activate.textContent = "SUIT ACTIVE";
+      els.core.classList.add("hot");
+      els.coreLabel.textContent = "ONLINE";
+      els.hint.textContent = "Tilt forward to thrust · back to climb · rotate to steer.";
+
+      connect();
+    }
+
+    els.activate.addEventListener("click", activateSuit);
+    els.calibrate.addEventListener("click", calibrate);
+
+    /* ---------- config panel ---------- */
+    function openConfig() {
+      const { host, db } = loadCfg();
+      els.cfgHost.value = host;
+      els.cfgDb.value = db;
+      els.config.classList.add("open");
+    }
+    els.openConfig.addEventListener("click", openConfig);
+    els.cfgCancel.addEventListener("click", () => els.config.classList.remove("open"));
+    els.cfgSave.addEventListener("click", () => {
+      const host = els.cfgHost.value.trim() || DEFAULT_HOST;
+      const db = els.cfgDb.value.trim() || DEFAULT_DB;
+      saveCfg(host, db);
+      els.config.classList.remove("open");
+      if (active) {
+        // reconnect with the new target
+        online = false;
+        setStatus("Reconnecting to " + host + " …");
+        connect();
+      } else {
+        setStatus("Link set: " + host);
+      }
+    });
+
+    setLink("offline");
   </script>
 </body>
 </html>

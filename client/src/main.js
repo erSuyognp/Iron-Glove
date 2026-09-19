@@ -289,6 +289,51 @@ function updateSuitEntity(entity, s) {
   );
 }
 
+// A remote pilot's suit (e.g. the judge on the phone). Gold/red so it reads as
+// a second suit, distinct from the cyan Player 1 box, with a name label.
+function makeOtherEntity(viewer, id) {
+  return viewer.entities.add({
+    name: `IRON GLOVE — ${id}`,
+    position: Cesium.Cartesian3.fromDegrees(
+      JHU_HOMEWOOD.longitude,
+      JHU_HOMEWOOD.latitude,
+      JHU_HOMEWOOD.altitude,
+    ),
+    box: {
+      dimensions: new Cesium.Cartesian3(6, 10, 3),
+      material: Cesium.Color.fromCssColorString('#ffb020').withAlpha(0.9),
+      outline: true,
+      outlineColor: Cesium.Color.fromCssColorString('#ff5b2e'),
+    },
+    point: {
+      pixelSize: 8,
+      color: Cesium.Color.fromCssColorString('#37e7ff'),
+    },
+    label: {
+      text: id.toUpperCase(),
+      font: '12px monospace',
+      fillColor: Cesium.Color.fromCssColorString('#ffb020'),
+      showBackground: true,
+      backgroundColor: Cesium.Color.fromCssColorString('#0a0e17').withAlpha(0.6),
+      pixelOffset: new Cesium.Cartesian2(0, -28),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+  });
+}
+
+function updateOtherEntity(entity, r) {
+  entity.position = Cesium.Cartesian3.fromDegrees(r.longitude, r.latitude, r.altitude);
+  const hpr = new Cesium.HeadingPitchRoll(
+    Cesium.Math.toRadians(r.heading),
+    Cesium.Math.toRadians(r.pitch),
+    Cesium.Math.toRadians(r.roll),
+  );
+  entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
+    entity.position.getValue(Cesium.JulianDate.now()),
+    hpr,
+  );
+}
+
 async function boot() {
   initHUD();
   initAttitude();
@@ -325,6 +370,41 @@ async function boot() {
   const trail = initTrail(viewer);
   updateChaseCamera(viewer, suit);
 
+  // Remote pilots (everyone that isn't us). Keyed by player_id; each holds its
+  // Cesium entity, the latest transform from the DB (`target`), and an eased
+  // `render` transform for smooth 30 Hz -> 60 fps motion.
+  const others = new Map();
+
+  function upsertOther(row) {
+    const target = {
+      longitude: row.positionX,
+      altitude: row.positionY,
+      latitude: row.positionZ,
+      heading: row.yaw,
+      pitch: row.pitch,
+      roll: row.roll,
+    };
+    const existing = others.get(row.playerId);
+    if (existing) {
+      existing.target = target;
+    } else {
+      others.set(row.playerId, {
+        entity: makeOtherEntity(viewer, row.playerId),
+        target,
+        render: { ...target },
+        init: true,
+      });
+    }
+  }
+
+  function removeOther(playerId) {
+    const o = others.get(playerId);
+    if (o) {
+      viewer.entities.remove(o.entity);
+      others.delete(playerId);
+    }
+  }
+
   // SpacetimeDB link: mirror the client-computed transform into the DB and
   // render the suit from the row we read back. Fails soft — if the module is
   // unreachable the game keeps flying on local physics.
@@ -343,16 +423,22 @@ async function boot() {
       }
     },
     onPlayer: (row) => {
-      // Map the position_x/y/z convention back to lon/lat/alt.
-      net = {
-        longitude: row.positionX,
-        altitude: row.positionY,
-        latitude: row.positionZ,
-        heading: row.yaw,
-        pitch: row.pitch,
-        roll: row.roll,
-      };
+      // Map the position_x/y/z convention back to lon/lat/alt. Our own row
+      // drives the local suit; every other row is a remote pilot (the judge).
+      if (row.playerId === PLAYER_ID) {
+        net = {
+          longitude: row.positionX,
+          altitude: row.positionY,
+          latitude: row.positionZ,
+          heading: row.yaw,
+          pitch: row.pitch,
+          roll: row.roll,
+        };
+      } else {
+        upsertOther(row);
+      }
     },
+    onPlayerLeave: (row) => removeOther(row.playerId),
   });
   stdb.start();
 
@@ -440,6 +526,26 @@ async function boot() {
 
     updateSuitEntity(suitEntity, view);
     updateChaseCamera(viewer, view);
+
+    // Remote pilots (the judge): ease each entity from its last DB transform
+    // toward the newest one, same snapshot interpolation we use for our row.
+    if (others.size) {
+      const k = 1 - Math.pow(1 - NET_LERP, dt * 60);
+      for (const o of others.values()) {
+        if (o.init) {
+          Object.assign(o.render, o.target);
+          o.init = false;
+        } else {
+          o.render.longitude = lerp(o.render.longitude, o.target.longitude, k);
+          o.render.latitude = lerp(o.render.latitude, o.target.latitude, k);
+          o.render.altitude = lerp(o.render.altitude, o.target.altitude, k);
+          o.render.pitch = lerp(o.render.pitch, o.target.pitch, k);
+          o.render.roll = lerp(o.render.roll, o.target.roll, k);
+          o.render.heading = easeHeading(o.render.heading, o.target.heading, k);
+        }
+        updateOtherEntity(o.entity, o.render);
+      }
+    }
 
     // Speed-driven feel: FOV punch, edge blur, and vignette all ramp together.
     const speedRatio = Math.min(1, Math.abs(suit.speed) / FX_FULL_SPEED);
