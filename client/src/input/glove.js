@@ -35,9 +35,54 @@ export function hasWebSerial() {
   return Boolean(navigator.serial);
 }
 
-// Latest CSV sample. ay/az are stored for future gestures.
+// Latest CSV sample (raw firmware degrees / g). ay/az stored for future gestures.
 export function readGlove() {
   return latest;
+}
+
+// Empirical poses from the live IMU (pitch, roll):
+//   (0, 160)   climb
+//   (0, 0)     down
+//   (-6, -120) forward speed
+//   pitch up   lean left
+//   pitch down lean right
+const ROLL_CLIMB = 160;
+const ROLL_DOWN = 0;
+const ROLL_FWD = -120;
+const ROLL_LOBE = 80; // deg — far enough that the three poses don't overlap
+const PITCH_DEADZONE = 8; // keeps the (-6, -120) thrust pose from also turning
+const PITCH_YAW_SCALE = 45;
+
+function wrapDeg(a) {
+  return ((((a + 180) % 360) + 360) % 360) - 180;
+}
+
+function angDist(a, b) {
+  return Math.abs(wrapDeg(a - b));
+}
+
+function lobe(roll, center, width = ROLL_LOBE) {
+  return Math.max(0, 1 - angDist(roll, center) / width);
+}
+
+function clampAxis(v) {
+  return Math.max(-1, Math.min(1, v));
+}
+
+// Flight axes from the current (or provided) IMU sample.
+export function readGloveAxes(sample = latest) {
+  const climb = lobe(sample.roll, ROLL_CLIMB) - lobe(sample.roll, ROLL_DOWN);
+  const throttle = lobe(sample.roll, ROLL_FWD);
+  const pitchCmd = Math.abs(sample.pitch) < PITCH_DEADZONE ? 0 : sample.pitch;
+  // Increase pitch → yaw left; decrease pitch → yaw right.
+  const yaw = clampAxis(-pitchCmd / PITCH_YAW_SCALE);
+  return {
+    throttle,
+    climb,
+    yaw,
+    visualPitch: climb * 18,
+    visualRoll: -sample.pitch,
+  };
 }
 
 // Rising-edge fist with cooldown. True once per punch.
@@ -63,23 +108,6 @@ function setConnected(value) {
   onConnection(value);
 }
 
-// Wrap degrees to (-180, 180].
-function wrapDeg(a) {
-  return ((((a + 180) % 360) + 360) % 360) - 180;
-}
-
-// IMU is worn chip-face-down on the glove. Firmware rest is roll ≈ ±180
-// (gravity on -Z) and pitch tilts are mirrored vs the hand.
-function calibrateUpsideDown({ pitch, roll, ax, ay, az }) {
-  return {
-    pitch: -pitch,
-    roll: wrapDeg(roll + 180),
-    ax: -ax,
-    ay: -ay,
-    az: -az,
-  };
-}
-
 function parseCsvLine(line) {
   const trimmed = line.trim();
   if (!trimmed) return null;
@@ -94,7 +122,7 @@ function parseCsvLine(line) {
   const az = Number(parts[4]);
   if (![pitch, roll, ax, ay, az].every(Number.isFinite)) return null;
 
-  return calibrateUpsideDown({ pitch, roll, ax, ay, az });
+  return { pitch, roll, ax, ay, az };
 }
 
 function noteSample(sample) {

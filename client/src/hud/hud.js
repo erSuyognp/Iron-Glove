@@ -12,7 +12,7 @@ const HELP_KEYBOARD =
       <span class="key">R</span> reset`;
 
 const HELP_GLOVE =
-  `palm down climb · lean to turn · fist blast
+  `roll 160 climb · roll 0 dive · roll −120 thrust · pitch lean · fist blast
       <span class="key">R</span> reset`;
 
 export function initHUD() {

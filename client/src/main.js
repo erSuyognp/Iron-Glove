@@ -6,7 +6,7 @@ import {
   connectGlove,
   setGloveConnectionHandler,
   isGloveConnected,
-  readGlove,
+  readGloveAxes,
   consumeFist,
   hasWebSerial,
 } from './input/glove.js';
@@ -64,11 +64,6 @@ const DAMAGE_MIN = 6;
 const DAMAGE_MAX = 45;
 const GPWS_ALT = 45; // AGL below which the "PULL UP" warning flashes
 
-// ---- Glove mapping (CSV: pitch,roll,ax,ay,az) ----
-const GLOVE_DEADZONE = 8; // deg — flat hand = hover
-const GLOVE_PITCH_SCALE = 45; // deg for full climb / dive
-const GLOVE_ROLL_SCALE = 45; // deg for full yaw
-const GLOVE_TILT_FOR_SPEED = 40; // combined tilt (deg) for full throttle
 const REPULSOR_LIFE = 0.35; // seconds the blast ellipsoid lasts
 
 const REPULSOR_LINES = [
@@ -170,14 +165,6 @@ function easeHeading(cur, target, k) {
   return (cur + normalizeDeg(target - cur) * k + 360) % 360;
 }
 
-function clampAxis(v) {
-  return Math.max(-1, Math.min(1, v));
-}
-
-function deadzone(deg, dz) {
-  return Math.abs(deg) < dz ? 0 : deg;
-}
-
 function stepFlight(dt) {
   const keys = readAxes();
 
@@ -195,16 +182,10 @@ function stepFlight(dt) {
   let boost;
 
   if (gloveOn) {
-    const g = readGlove();
-    const pitchCmd = deadzone(g.pitch, GLOVE_DEADZONE);
-    const rollCmd = deadzone(g.roll, GLOVE_DEADZONE);
-    const tilt = Math.hypot(pitchCmd, rollCmd);
-
-    throttle = tilt <= 0 ? 0 : Math.min(1, tilt / GLOVE_TILT_FOR_SPEED);
-    // Palm down (negative pitch) climbs; palm up dives.
-    climb = clampAxis(-pitchCmd / GLOVE_PITCH_SCALE);
-    // Left/right lean yaws the suit.
-    yaw = clampAxis(rollCmd / GLOVE_ROLL_SCALE);
+    const g = readGloveAxes();
+    throttle = g.throttle;
+    climb = g.climb;
+    yaw = g.yaw;
     rollInput = 0;
     boost = keys.boost;
     suit.mode = 'GLOVE';
@@ -239,10 +220,9 @@ function stepFlight(dt) {
   suit.longitude += dEast / (111320 * Math.cos(latRad));
 
   if (gloveOn) {
-    const g = readGlove();
-    // IMU pitch → suit pitch (forward/back tilt); IMU roll → suit roll (lean).
-    suit.pitch = smooth(suit.pitch, g.pitch, ANGLE_LERP, dt);
-    suit.roll = smooth(suit.roll, g.roll, ANGLE_LERP, dt);
+    const g = readGloveAxes();
+    suit.pitch = smooth(suit.pitch, g.visualPitch, ANGLE_LERP, dt);
+    suit.roll = smooth(suit.roll, g.visualRoll, ANGLE_LERP, dt);
     suit.bank = 0;
   } else {
     // Pitch: nose up/down with climb input.
