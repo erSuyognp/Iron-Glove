@@ -4,6 +4,7 @@
   --iron-gold: #c8a020;
   --iron-red: #ff3b30;
   --iron-bg: #0a0e1a;
+  --iron-blue: #4d9dff; /* pilot tracker */
   --hud-glow: 0 0 8px var(--iron-cyan-dim);
   --hud-font: 'Courier New', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -193,6 +194,26 @@ html, body {
   0%, 49% { opacity: 1; }
   50%, 100% { opacity: 0.15; }
 }
+
+/* Pilot tracker readout — moved beside the 3D arrow every frame (tracker.js). */
+.tracker {
+  position: absolute;
+  top: 0; left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 9px;
+  border-left: 2px solid var(--iron-blue);
+  background: rgba(10, 14, 26, 0.5);
+  color: var(--iron-blue);
+  text-shadow: 0 0 8px #2f86ff99;
+  white-space: nowrap;
+  will-change: transform, opacity;
+}
+.tracker[hidden] { display: none; }
+.tracker-name { font-size: 10px; letter-spacing: 3px; opacity: 0.85; }
+.tracker-dist { font-size: 18px; font-weight: bold; }
+.tracker-alt { font-size: 11px; letter-spacing: 1px; }
 
 /* Repulsor blast flash */
 #repulsor-flash {

@@ -30,6 +30,7 @@ import {
   setGfx,
 } from './hud/hud.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
+import { createTracker } from './hud/tracker.js';
 import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
 import { initTrail } from './suit/thruster.js';
 import { initSuitOverlay } from './suit/player.js';
@@ -737,6 +738,31 @@ function activePilots() {
   return [...pilots.values()].filter((p) => p.active);
 }
 
+// Straight-line distance between two suits in metres (flat earth is plenty at
+// campus scale).
+function metresApart(a, b) {
+  const north = (b.latitude - a.latitude) * 111320;
+  const east = (b.longitude - a.longitude) * 111320 * Math.cos(Cesium.Math.toRadians(a.latitude));
+  return Math.hypot(north, east, b.altitude - a.altitude);
+}
+
+// What the blue tracker points at: from our suit, the nearest airborne pilot
+// (the friend on the phone); from a pilot we're watching, back at us.
+function trackerTarget(watched, localView) {
+  if (watched) return { name: displayName(PLAYER_ID), view: localView };
+  let nearest = null;
+  let nearestM = Infinity;
+  for (const pilot of pilots.values()) {
+    if (!pilot.active) continue;
+    const m = metresApart(localView, pilot.view);
+    if (m < nearestM) {
+      nearestM = m;
+      nearest = pilot;
+    }
+  }
+  return nearest && { name: nearest.name, view: nearest.view };
+}
+
 // Refresh the POV readout and the switch button (visible only while another
 // pilot is airborne, labelled with the suit it would switch to).
 function refreshPov(attention = false) {
@@ -817,6 +843,7 @@ async function boot() {
   homewoodBoundary = initHomewoodBoundary(viewer);
   const overlay = initSuitOverlay(viewer, '/iron_man_ucm.glb');
   const suit3d = overlay.createSuit({ name: PLAYER_ID });
+  const tracker = createTracker(overlay);
   const trail = initTrail(viewer);
   const trailOrigin = new Cesium.Cartesian3();
   updateChaseCamera(viewer, suit);
@@ -953,6 +980,8 @@ async function boot() {
     const watched = povId ? pilots.get(povId) : null;
     updateChaseCamera(viewer, watched ? watched.view : view);
     localTag.show = Boolean(watched);
+    // The blue tracker rides that same suit and points at the other pilot.
+    tracker.update(watched ? watched.view : view, trackerTarget(watched, view), dt);
 
     // Speed-driven feel: FOV punch, edge blur, and vignette all ramp together.
     const viewSpeed = watched ? watched.state.speed : suit.speed;

@@ -55,7 +55,7 @@ const bootBody = new THREE.Vector3();
  * Create the Three.js overlay and start loading the GLB.
  * @param {Cesium.Viewer} viewer
  * @param {string} glbUrl  served URL of the .glb (e.g. '/iron_man.glb')
- * @returns {{ createSuit(opts?):SuitHandle, render():void, setVisible(b):void }}
+ * @returns {{ createSuit(opts?):SuitHandle, addObject(object, prepare):void, render():void, setVisible(b):void }}
  */
 export function initSuitOverlay(viewer, glbUrl) {
   const cesiumCanvas = viewer.scene.canvas;
@@ -107,6 +107,7 @@ export function initSuitOverlay(viewer, glbUrl) {
   let template = null; // the loaded glTF scene; every suit is a clone of it
   let hidden = false;
   const suits = [];
+  const extras = []; // prepare() of each other overlay object (e.g. the pilot tracker)
 
   const loader = new GLTFLoader();
   loader.load(
@@ -256,6 +257,17 @@ export function initSuitOverlay(viewer, glbUrl) {
     return handle;
   }
 
+  /**
+   * Draw another object in the overlay (e.g. the pilot tracker). Like the
+   * suits it lives in camera-relative space: `prepare(viewMatrix, camera,
+   * width, height)` runs every frame before drawing and sets `object.matrix`.
+   */
+  function addObject(object, prepare) {
+    object.matrixAutoUpdate = false;
+    scene.add(object);
+    extras.push(prepare);
+  }
+
   // Match the Three canvas resolution to the Cesium canvas (CSS pixels).
   function syncSize() {
     const w = cesiumCanvas.clientWidth || window.innerWidth;
@@ -286,6 +298,7 @@ export function initSuitOverlay(viewer, glbUrl) {
     // Three's float matrix pipeline. Keeping the camera at identity avoids a
     // second enormous ECEF transform and its accompanying shimmer.
     for (const suit of suits) suit.prepare(cam.viewMatrix);
+    for (const prepare of extras) prepare(cam.viewMatrix, camera, w, h);
 
     camera.matrix.identity();
     camera.matrixWorld.identity();
@@ -306,5 +319,5 @@ export function initSuitOverlay(viewer, glbUrl) {
   ro.observe(cesiumCanvas);
   syncSize();
 
-  return { createSuit, render, setVisible };
+  return { createSuit, addObject, render, setVisible };
 }
