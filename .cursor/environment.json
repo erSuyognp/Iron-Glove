@@ -1,0 +1,15 @@
+{
+  "name": "IRON GLOVE",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "client-dev",
+      "command": "cd client && npm run dev"
+    }
+  ],
+  "ports": [
+    { "name": "client", "port": 5173 },
+    { "name": "spacetimedb", "port": 3000 }
+  ]
+}
