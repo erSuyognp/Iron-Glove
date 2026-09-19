@@ -41,16 +41,18 @@
       <div class="stat"><span class="stat-k">HDG</span><span id="hud-hdg" class="stat-v">0</span><span class="stat-u">°</span></div>
       <div class="stat mode"><span class="stat-k">MODE</span><span id="hud-mode" class="stat-v">KEYBOARD</span></div>
       <div class="stat mode"><span class="stat-k">LINK</span><span id="hud-net" class="stat-v">…</span></div>
+      <div class="stat mode"><span class="stat-k">POV</span><span id="hud-pov" class="stat-v">…</span></div>
+      <div class="stat mode small"><span class="stat-k">GFX</span><span id="hud-gfx" class="stat-v">…</span></div>
       <div class="hud-actions">
         <button type="button" id="btn-connect-glove" class="hud-btn">CONNECT GLOVE</button>
+      </div>
+      <div class="hud-actions">
+        <button type="button" id="btn-pov" class="hud-btn pov" hidden>POV</button>
       </div>
     </div>
 
     <!-- Heading tape (scrolls with heading) -->
     <div id="heading-tape" class="heading-tape"></div>
-
-    <!-- Center artificial horizon / pitch ladder / bank indicator -->
-    <div id="attitude" class="attitude"></div>
 
     <!-- Ground proximity warning -->
     <div id="gpws" class="gpws">PULL UP</div>

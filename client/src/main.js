@@ -1,6 +1,7 @@
 import * as Cesium from 'cesium';
-import { initWorld, hasValidToken, JHU_HOMEWOOD } from './cesium/world.js';
+import { initWorld, hasValidToken, getRenderQuality, JHU_HOMEWOOD } from './cesium/world.js';
 import { updateChaseCamera } from './cesium/camera.js';
+import { initHomewoodBoundary } from './cesium/homewood-boundary.js';
 import { initKeyboard, readAxes } from './input/keyboard.js';
 import {
   connectGlove,
@@ -23,10 +24,15 @@ import {
   setGloveButton,
   setInputHint,
   flashRepulsor,
+  setPov,
+  setPovButton,
+  onPovButton,
+  setGfx,
 } from './hud/hud.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
 import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
 import { initTrail } from './suit/thruster.js';
+import { initSuitOverlay } from './suit/player.js';
 import { createStdbClient } from './spacetimedb/client.js';
 
 // ---- Flight tuning ----
@@ -48,23 +54,51 @@ const SPEED_FOV_DEG = 16; // extra FOV at full speed
 const FX_FULL_SPEED = MAX_SPEED * 1.6;
 const MIN_ALT = 30; // safety floor (only used if the mesh can't be sampled)
 const MAX_ALT = 900;
+// A depth sample is only trustworthy when it is at or below the suit. Fresh
+// photogrammetry LODs can otherwise briefly report an unrelated tile far above
+// the pilot, which must never teleport the player or the chase camera.
+const MAX_SURFACE_ABOVE_SUIT = 10;
+// Likewise, the coarsest planet-scale tiles sit kilometres below the real
+// ground until the campus streams in; ignore samples that deep.
+const MAX_SURFACE_BELOW_SUIT = 1500;
 // The suit has weight — speed eases toward its target instead of snapping.
 // Same 0.08 feel as the glove spring-damper; do not crank this up.
 const SPEED_LERP = 0.08;
 const ANGLE_LERP = 0.1; // how fast visual pitch/roll settle
 
-// ---- Collision / damage tuning ----
+// ---- Visual attitude (mesh only; the camera and HUD keep the flight path) ----
+// A jet-powered body has to tip its thrust line into the motion: upright in a
+// hover, ~72° forward at cruise, near-horizontal on boost, flared back when
+// braking or reversing.
+const LEAN_GAIN = 3.1; // lean = atan(gain * speed / MAX_SPEED)
+const LEAN_REVERSE_GAIN = 0.7; // backing up only leans the chest back ~35°
+const CLIMB_LEAN = 24; // deg: climbing at speed noses up the path, diving down
+const ACCEL_LEAN = 0.08; // deg per m/s²: thrust leads acceleration
+const MAX_ACCEL_LEAN = 20;
+const MIN_LEAN = -40;
+const MAX_LEAN = 100;
+const ACCEL_REF = 120; // m/s² treated as a full-throttle change for the rig
+const ACCEL_LERP = 0.15;
+// Coordinated-turn bank: grows with airspeed, a small lean when pivoting.
+const BANK_HOVER = 10;
+const BANK_PER_MS = 0.75;
+const MAX_BANK = 55;
+// Lean/bank ride a slightly under-damped spring, so the suit swings into an
+// attitude and settles instead of snapping to it.
+const ATTITUDE_OMEGA = 6.5; // rad/s
+const ATTITUDE_ZETA = 0.72;
+const SPRING_STEP = 1 / 120; // s, fixed substep keeps the spring framerate-independent
+
+// ---- Collision tuning ----
+// Buildings and the ground still stop the suit, but contact never costs
+// health: collision damage is off.
 const GROUND_CLEARANCE = 4; // how far the suit floats above a surface at rest
 const SUIT_RADIUS = 4; // meters, for the forward obstacle ray
-const IMPACT_COOLDOWN_MS = 700; // min gap between damage ticks
-const REBOOT_MS = 1800; // downtime after health hits 0
-const SCRAPE_SPEED = 12; // below this, touching ground doesn't hurt
-const DAMAGE_SCALE = 0.55; // m/s -> HP
-const DAMAGE_MIN = 6;
-const DAMAGE_MAX = 45;
+const BUMP_COOLDOWN_MS = 700; // min gap between wall bounces
 const GPWS_ALT = 45; // AGL below which the "PULL UP" warning flashes
 
 const REPULSOR_LIFE = 0.35; // seconds the blast ellipsoid lasts
+const BOUNDARY_WARN_COOLDOWN_MS = 2400;
 
 const REPULSOR_LINES = [
   'Repulsor blast away, sir.',
@@ -73,30 +107,34 @@ const REPULSOR_LINES = [
 ];
 
 // ---- SpacetimeDB sync (Phase 2) ----
-// The client stays authoritative for physics; we mirror the computed transform
-// into SpacetimeDB and render the player from the row we read back.
+// The client stays authoritative for physics and rendering; we mirror the
+// computed transform into SpacetimeDB for multiplayer. Rendering our own suit
+// from a 30 Hz server echo made the chase camera visibly step on a healthy
+// connection, so server rows are now telemetry/remote-pilot data only.
 const PLAYER_ID = 'suyog';
 const NET_SEND_HZ = 30; // how often we push our transform to the server
 const NET_SEND_MS = 1000 / NET_SEND_HZ;
-// Render-smoothing for the position we read back. This is snapshot
-// interpolation (netcode), NOT physics — it just keeps the 30 Hz stream smooth
-// at 60 fps. Physics still runs entirely client-side in stepFlight().
+// Render-smoothing for remote pilot snapshots. This is net interpolation, not
+// physics; the local pilot always renders directly from its 60 fps simulation.
 const NET_LERP = 0.5;
+// A remote pilot is live while its row keeps updating (the phone streams at
+// ~30 Hz). Rows that only arrive with the initial subscription are leftovers
+// from an earlier session and never spawn a suit.
+const PILOT_ACTIVE_MS = 3000;
+const MOTION_LERP = 0.15; // smoothing for velocities read off a remote track
+const REMOTE_SURFACE_MS = 250; // AGL sampling under a remote pilot we're watching
+const LABEL_HEIGHT = 14; // m above the boots for a pilot's name tag
 
 const JARVIS_LINES = {
   online: 'Suit online. Homewood airspace is clear, sir.',
-  minor: [
+  bump: [
     'Structural contact. The architecture is not the enemy, sir.',
     'That was a building. They rarely move.',
-    'Minor impact. The suit can take it — barely.',
   ],
-  major: [
-    'Heavy impact! Integrity dropping fast.',
-    'We really cannot keep hitting things, sir.',
-    'Warning: sustained collision damage.',
-  ],
-  reboot: 'Suit integrity depleted. Emergency reboot in progress, sir.',
-  restored: 'Systems restored. Back in Homewood airspace, sir.',
+  pilotJoined: (name) =>
+    `A second suit has entered Homewood airspace, sir. ${name} is airborne — press V to take their view.`,
+  pilotLeft: (name) => `${name}'s suit has gone quiet, sir.`,
+  povLost: (name) => `Lost ${name}'s feed. Back on your suit, sir.`,
 };
 
 function pick(arr) {
@@ -111,9 +149,15 @@ function spawnState() {
     altitude: JHU_HOMEWOOD.altitude,
     heading: 0, // degrees, 0 = north
     speed: 0, // m/s (current, eased)
+    vspeed: 0, // m/s vertical (current, eased)
+    accel: 0, // m/s² forward, smoothed — drives the flare / tip-in
+    turn: 0, // -1..1 smoothed yaw command — drives the rig's steering arms
     pitch: 0, // degrees (visual)
     roll: 0, // degrees — manual barrel roll (Q/E), drives the camera
     bank: 0, // degrees — auto-lean into turns, mesh only
+    bankRate: 0,
+    lean: 0, // degrees — thrust line tipped into the motion, mesh only
+    leanRate: 0,
     hover: 0, // meters — idle levitation offset (visual only)
     health: 100,
     mode: isGloveConnected() ? 'GLOVE' : 'KEYBOARD',
@@ -123,25 +167,20 @@ function spawnState() {
 let suit = spawnState();
 let repulsor = null; // { entity, born } — fist-clench blast visual
 
-// Collision / crash bookkeeping.
+// Collision bookkeeping.
 let lastSurface; // last sampled surface height under the suit
-let damageCooldownUntil = 0;
-let crashedUntil = 0; // > now while rebooting after a fatal crash
+let bumpCooldownUntil = 0;
 let lastForwardCheck = 0;
 let lastSurfaceSampleAt = 0; // throttle GPU height reads
 let trailClearNeeded = false; // flush the afterburner trail after a teleport
 let idle = false; // suit is still enough to levitate
 let hoverBlend = 0; // 0..1 ease for the idle hover
 let hoverClock = 0; // seconds, advances the hover sine
+let homewoodBoundary = null;
+let boundaryWarnUntil = 0;
 
 // ---- SpacetimeDB state ----
-// `net` holds the latest transform read back from our player_state row (mapped
-// out of the position_x/y/z convention). `renderPos` eases toward it so the
-// rendered suit is driven by the round-tripped server state when online.
 let stdb = null;
-let net = null; // { longitude, latitude, altitude, heading, pitch, roll } | null
-const renderPos = { longitude: 0, latitude: 0, altitude: 0, heading: 0, pitch: 0, roll: 0 };
-let renderInit = false; // renderPos seeded from the first net snapshot
 let lastNetSendAt = 0;
 
 function lerp(a, b, t) {
@@ -165,11 +204,43 @@ function easeHeading(cur, target, k) {
   return (cur + normalizeDeg(target - cur) * k + 360) % 360;
 }
 
+// Drive obj[key] toward `target` on a damped spring, carrying its velocity in
+// obj[rateKey].
+function springTo(obj, key, rateKey, target, dt) {
+  const steps = Math.max(1, Math.ceil(dt / SPRING_STEP));
+  const h = dt / steps;
+  for (let i = 0; i < steps; i++) {
+    const a =
+      ATTITUDE_OMEGA * ATTITUDE_OMEGA * (target - obj[key]) -
+      2 * ATTITUDE_ZETA * ATTITUDE_OMEGA * obj[rateKey];
+    obj[rateKey] += a * h;
+    obj[key] += obj[rateKey] * h;
+  }
+}
+
+// How far the suit tips its thrust line into the motion, in degrees
+// (+ = chest down / head forward). Mesh only.
+function leanTarget(s) {
+  const cruise = s.speed / MAX_SPEED;
+  let lean = Cesium.Math.toDegrees(
+    cruise >= 0 ? Math.atan(LEAN_GAIN * cruise) : -Math.atan(LEAN_REVERSE_GAIN * -cruise),
+  );
+  // Climbing at speed noses the body up the flight path; diving tips it down.
+  lean -= (s.vspeed / CLIMB_RATE) * CLIMB_LEAN * Math.max(-1, Math.min(1, cruise));
+  // Thrust leads acceleration: tip in while speeding up, flare while slowing.
+  // Tipping in fades out near level flight (past it the jets would push the
+  // suit down); the braking flare applies at any speed.
+  const tip = Math.max(-MAX_ACCEL_LEAN, Math.min(MAX_ACCEL_LEAN, s.accel * ACCEL_LEAN));
+  lean += tip > 0 ? tip * Math.max(0, Math.cos(Cesium.Math.toRadians(lean))) : tip;
+  return Math.max(MIN_LEAN, Math.min(MAX_LEAN, lean));
+}
+
 function stepFlight(dt) {
   const keys = readAxes();
 
   if (keys.reset) {
     suit = spawnState();
+    lastSurface = undefined;
     trailClearNeeded = true;
     return;
   }
@@ -201,16 +272,28 @@ function stepFlight(dt) {
   // Target forward speed from throttle (+ optional boost).
   // SPEED_LERP 0.08 is the suit's spring-damper — do not crank this up.
   const targetSpeed = throttle * MAX_SPEED * (boost ? BOOST_MULT : 1);
+  const previousSpeed = suit.speed;
   suit.speed = smooth(suit.speed, targetSpeed, SPEED_LERP, dt);
+  // Animation drivers: how hard the suit is accelerating and turning.
+  if (dt > 0) suit.accel = smooth(suit.accel, (suit.speed - previousSpeed) / dt, ACCEL_LERP, dt);
+  suit.turn = smooth(suit.turn, yaw, ANGLE_LERP, dt);
 
   // Yaw turns the suit; scale by dt so it's framerate-independent.
   suit.heading = (suit.heading + yaw * YAW_RATE * dt + 360) % 360;
 
-  // Climb / dive.
-  suit.altitude += climb * CLIMB_RATE * dt;
-  suit.altitude = Math.min(MAX_ALT, Math.max(MIN_ALT, suit.altitude));
+  // Climb / dive. Vertical speed eases through the same spring as forward
+  // speed, so the suit carries its weight on every axis and the body can lean
+  // along a real flight path rather than a key state.
+  suit.vspeed = smooth(suit.vspeed, climb * CLIMB_RATE, SPEED_LERP, dt);
+  suit.altitude += suit.vspeed * dt;
+  if (suit.altitude < MIN_ALT || suit.altitude > MAX_ALT) {
+    suit.altitude = Math.min(MAX_ALT, Math.max(MIN_ALT, suit.altitude));
+    suit.vspeed = 0;
+  }
 
   // Advance position along heading over the ground.
+  const previousLongitude = suit.longitude;
+  const previousLatitude = suit.latitude;
   const dist = suit.speed * dt; // meters this frame
   const headingRad = Cesium.Math.toRadians(suit.heading);
   const dNorth = Math.cos(headingRad) * dist;
@@ -219,13 +302,35 @@ function stepFlight(dt) {
   suit.latitude += dNorth / 111320;
   suit.longitude += dEast / (111320 * Math.cos(latRad));
 
+  // Homewood is the complete playable world: the holographic perimeter is
+  // visible at the edge of campus, and this constraint makes it a real flight
+  // barrier at every altitude instead of just decorative geometry.
+  if (homewoodBoundary) {
+    const confined = homewoodBoundary.confine(
+      previousLongitude,
+      previousLatitude,
+      suit.longitude,
+      suit.latitude,
+    );
+    if (confined.blocked) {
+      suit.longitude = confined.longitude;
+      suit.latitude = confined.latitude;
+      suit.speed *= 0.18;
+      if (performance.now() >= boundaryWarnUntil) {
+        boundaryWarnUntil = performance.now() + BOUNDARY_WARN_COOLDOWN_MS;
+        setJarvis('Homewood perimeter engaged. Keeping you inside campus airspace, sir.');
+      }
+    }
+  }
+
+  let bankTarget = 0;
   if (gloveOn) {
+    // The glove's roll already leans the suit (and camera) into its turns.
     const g = readGloveAxes();
     suit.pitch = smooth(suit.pitch, g.visualPitch, ANGLE_LERP, dt);
     suit.roll = smooth(suit.roll, g.visualRoll, ANGLE_LERP, dt);
-    suit.bank = 0;
   } else {
-    // Pitch: nose up/down with climb input.
+    // HUD pitch: nose up while climbing, down while diving.
     suit.pitch = smooth(suit.pitch, climb * 18, ANGLE_LERP, dt);
 
     // Manual barrel roll (Q/E): rotate continuously while held (can go inverted
@@ -236,9 +341,12 @@ function stepFlight(dt) {
       suit.roll = smooth(normalizeDeg(suit.roll), 0, ANGLE_LERP, dt);
     }
 
-    // Auto-bank: lean into turns (mesh only, so the camera isn't yanked sideways).
-    suit.bank = smooth(suit.bank, -yaw * 28, ANGLE_LERP, dt);
+    // Auto-bank into turns (mesh only, so the camera isn't yanked sideways).
+    // Positive yaw turns right and positive roll drops the right side.
+    bankTarget = yaw * Math.min(MAX_BANK, BANK_HOVER + Math.abs(suit.speed) * BANK_PER_MS);
   }
+  springTo(suit, 'bank', 'bankRate', bankTarget, dt);
+  springTo(suit, 'lean', 'leanRate', leanTarget(suit), dt);
 
   // "Still" = no control input and barely moving, so the suit can levitate.
   idle =
@@ -247,7 +355,8 @@ function stepFlight(dt) {
     climb === 0 &&
     rollInput === 0 &&
     !boost &&
-    Math.abs(suit.speed) < HOVER_IDLE_SPEED;
+    Math.abs(suit.speed) < HOVER_IDLE_SPEED &&
+    Math.abs(suit.vspeed) < HOVER_IDLE_SPEED;
 }
 
 function triggerRepulsor(viewer) {
@@ -289,26 +398,20 @@ function stepRepulsor(viewer, now) {
   }
 }
 
-// Apply impact damage; returns true if damage actually landed (not on cooldown).
-function registerImpact(impactSpeed) {
+// A wall contact costs momentum, never health. Returns true when a bounce
+// should happen (i.e. not within the cooldown of the previous one).
+function bump() {
   const now = performance.now();
-  if (now < damageCooldownUntil) return false;
-  damageCooldownUntil = now + IMPACT_COOLDOWN_MS;
-
-  const dmg = Math.min(DAMAGE_MAX, Math.max(DAMAGE_MIN, Math.abs(impactSpeed) * DAMAGE_SCALE));
-  suit.health = Math.max(0, suit.health - dmg);
-
-  if (suit.health <= 0) {
-    crashedUntil = now + REBOOT_MS;
-    setJarvis(JARVIS_LINES.reboot);
-  } else {
-    setJarvis(pick(dmg >= 22 ? JARVIS_LINES.major : JARVIS_LINES.minor));
-  }
+  if (now < bumpCooldownUntil) return false;
+  bumpCooldownUntil = now + BUMP_COOLDOWN_MS;
+  setJarvis(pick(JARVIS_LINES.bump));
   return true;
 }
 
-function collisionStep(viewer, suitEntity) {
-  const exclude = [suitEntity];
+function collisionStep(viewer) {
+  // The suit is now an overlay canvas, not a Cesium entity, so there's nothing
+  // in the scene to exclude from the height/obstacle sensors.
+  const exclude = [];
   const now = performance.now();
 
   // 1) Dynamic floor: don't sink into the ground or a roof beneath us.
@@ -318,17 +421,23 @@ function collisionStep(viewer, suitEntity) {
   if (now - lastSurfaceSampleAt > 50) {
     lastSurfaceSampleAt = now;
     const s = sampleSurfaceHeight(viewer, suit.longitude, suit.latitude, exclude);
-    if (s !== undefined) lastSurface = s;
+    // Ignore samples above us. They are normally an in-flight roof, but can
+    // also be a newly streamed 3D-tile depth buffer from a different LOD.
+    // Forward-ray collision handles actual buildings; accepting such a sample
+    // as a floor would jerk the camera hundreds of metres in one frame.
+    if (
+      s !== undefined &&
+      s <= suit.altitude + MAX_SURFACE_ABOVE_SUIT &&
+      s >= suit.altitude - MAX_SURFACE_BELOW_SUIT
+    ) {
+      lastSurface = s;
+    }
   }
   if (lastSurface !== undefined) {
     const floor = lastSurface + GROUND_CLEARANCE;
     if (suit.altitude < floor) {
-      const penetration = floor - suit.altitude;
-      // Hard landing / fast scrape hurts; a gentle settle doesn't.
-      if (Math.abs(suit.speed) > SCRAPE_SPEED || penetration > 3) {
-        registerImpact(Math.abs(suit.speed) + penetration * 6);
-      }
       suit.altitude = floor;
+      suit.vspeed = Math.max(0, suit.vspeed); // the floor stops the descent
       suit.speed *= 0.5; // bleed momentum on contact
     }
   }
@@ -339,7 +448,7 @@ function collisionStep(viewer, suitEntity) {
     const lookAhead = Math.max(8, Math.abs(suit.speed) * 0.2 + SUIT_RADIUS);
     const obstacle = forwardObstacle(viewer, suit, lookAhead, exclude);
     if (obstacle && Math.abs(suit.speed) > 6) {
-      if (registerImpact(Math.abs(suit.speed))) {
+      if (bump()) {
         // Bounce back off the wall.
         suit.speed = -Math.abs(suit.speed) * 0.2;
         const headingRad = Cesium.Math.toRadians(suit.heading);
@@ -351,88 +460,206 @@ function collisionStep(viewer, suitEntity) {
   }
 }
 
-function makeSuitEntity(viewer) {
-  return viewer.entities.add({
-    name: 'IRON GLOVE — Player 1',
-    position: Cesium.Cartesian3.fromDegrees(suit.longitude, suit.latitude, suit.altitude),
-    // Placeholder body until the GLTF suit lands in Phase 3.
-    box: {
-      dimensions: new Cesium.Cartesian3(6, 10, 3),
-      material: Cesium.Color.fromCssColorString('#00ccff').withAlpha(0.9),
-      outline: true,
-      outlineColor: Cesium.Color.fromCssColorString('#7fe9ff'),
-    },
-    // A small "thruster" trail marker under the suit.
-    point: {
-      pixelSize: 8,
-      color: Cesium.Color.fromCssColorString('#ffb020'),
-    },
-  });
-}
-
-function updateSuitEntity(entity, s) {
-  entity.position = Cesium.Cartesian3.fromDegrees(
-    s.longitude,
-    s.latitude,
-    s.altitude + s.hover,
-  );
-  // Idle sway: a slow roll/pitch wobble, as if thrusters are holding a hover.
+// The player suit is rendered by the Three.js overlay (initSuitOverlay), not a
+// Cesium entity. This builds the per-frame view that feeds it: the idle
+// levitation sway on top of the (already spring-damped) attitude, plus the
+// normalized flight state that poses the rig and throttles its jets.
+function suitView(s) {
   const swayRoll = Math.sin(hoverClock * 1.3) * HOVER_SWAY_ROLL * hoverBlend;
   const swayPitch = Math.sin(hoverClock * 1.7 + 1.0) * HOVER_SWAY_PITCH * hoverBlend;
-  const hpr = new Cesium.HeadingPitchRoll(
-    Cesium.Math.toRadians(s.heading),
-    Cesium.Math.toRadians(s.pitch + swayPitch),
-    Cesium.Math.toRadians(s.roll + s.bank + swayRoll),
-  );
-  entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
-    entity.position.getValue(Cesium.JulianDate.now()),
-    hpr,
-  );
+  return {
+    ...s,
+    swayRoll,
+    swayPitch,
+    thrust: thrustDrivers(s),
+  };
 }
 
-// A remote pilot's suit (e.g. the judge on the phone). Gold/red so it reads as
-// a second suit, distinct from the cyan Player 1 box, with a name label.
-function makeOtherEntity(viewer, id) {
+// Normalized drivers for the rig's flight poses and jets.
+function thrustDrivers(s) {
+  return {
+    forward: s.speed / MAX_SPEED, // 1 = cruise, up to BOOST_MULT, < 0 reversing
+    climb: s.vspeed / CLIMB_RATE, // -1 dive .. 1 climb
+    accel: Math.max(-1, Math.min(1, s.accel / ACCEL_REF)),
+    turn: s.turn, // -1 left .. 1 right
+  };
+}
+
+// ---- Remote pilots ----
+// Everyone who isn't us, e.g. the judge on the phone controller. Each gets a
+// full animated suit. The phone only streams position and heading, so the
+// flight state the rig needs (speed, climb, acceleration, turn, lean, bank) is
+// read back off the interpolated track with the same attitude model as ours.
+
+const pilots = new Map(); // player_id -> pilot
+let povId = null; // null = our own suit; else the id of the pilot we're watching
+
+function displayName(id) {
+  return id.toUpperCase();
+}
+
+// Floating name tag over a suit. `getView` returns the suit's current view.
+function makeNameTag(viewer, text, color, getView) {
   return viewer.entities.add({
-    name: `IRON GLOVE — ${id}`,
-    position: Cesium.Cartesian3.fromDegrees(
-      JHU_HOMEWOOD.longitude,
-      JHU_HOMEWOOD.latitude,
-      JHU_HOMEWOOD.altitude,
-    ),
-    box: {
-      dimensions: new Cesium.Cartesian3(6, 10, 3),
-      material: Cesium.Color.fromCssColorString('#ffb020').withAlpha(0.9),
-      outline: true,
-      outlineColor: Cesium.Color.fromCssColorString('#ff5b2e'),
-    },
-    point: {
-      pixelSize: 8,
-      color: Cesium.Color.fromCssColorString('#37e7ff'),
-    },
+    name: `IRON GLOVE — ${text}`,
+    position: new Cesium.CallbackProperty((_time, result) => {
+      const v = getView();
+      return Cesium.Cartesian3.fromDegrees(
+        v.longitude,
+        v.latitude,
+        v.altitude + (v.hover || 0) + LABEL_HEIGHT,
+        Cesium.Ellipsoid.WGS84,
+        result,
+      );
+    }, false),
     label: {
-      text: id.toUpperCase(),
+      text,
       font: '12px monospace',
-      fillColor: Cesium.Color.fromCssColorString('#ffb020'),
+      fillColor: Cesium.Color.fromCssColorString(color),
       showBackground: true,
       backgroundColor: Cesium.Color.fromCssColorString('#0a0e17').withAlpha(0.6),
-      pixelOffset: new Cesium.Cartesian2(0, -28),
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
     },
   });
 }
 
-function updateOtherEntity(entity, r) {
-  entity.position = Cesium.Cartesian3.fromDegrees(r.longitude, r.latitude, r.altitude);
-  const hpr = new Cesium.HeadingPitchRoll(
-    Cesium.Math.toRadians(r.heading),
-    Cesium.Math.toRadians(r.pitch),
-    Cesium.Math.toRadians(r.roll),
+function createPilot(viewer, overlay, id) {
+  const pilot = {
+    id,
+    name: displayName(id),
+    mode: 'PHONE',
+    health: 100,
+    target: null, // newest transform from the DB
+    render: null, // eased transform actually drawn
+    view: null, // view handed to the suit this frame
+    flight: { speed: 0, vspeed: 0, accel: 0, turn: 0, lean: 0, leanRate: 0, bank: 0, bankRate: 0 },
+    lastLiveAt: -Infinity, // when the row last changed on the server
+    active: false,
+    surface: undefined, // ground height under the pilot, sampled while watched
+    surfaceSampledAt: 0,
+    suit3d: overlay.createSuit({ name: id, jets: 'amber' }),
+    trail: initTrail(viewer, { cool: '#ffb020', hot: '#ff4b2e' }),
+    trailOrigin: new Cesium.Cartesian3(),
+  };
+  pilot.suit3d.setVisible(false);
+  pilot.tag = makeNameTag(viewer, pilot.name, '#ffb020', () => pilot.view ?? pilot.render);
+  pilot.tag.show = false;
+  return pilot;
+}
+
+function receivePilotRow(pilot, row, live) {
+  pilot.target = {
+    longitude: row.positionX,
+    altitude: row.positionY,
+    latitude: row.positionZ,
+    heading: row.yaw,
+  };
+  pilot.mode = row.mode;
+  pilot.health = row.suitHealth;
+  if (live) pilot.lastLiveAt = performance.now();
+}
+
+function removePilot(viewer, pilot) {
+  pilot.suit3d.dispose();
+  pilot.trail.destroy();
+  viewer.entities.remove(pilot.tag);
+  pilots.delete(pilot.id);
+}
+
+// Advance one remote pilot: ease toward the newest snapshot, read its motion
+// off the drawn track, and pose its suit. Returns true if it just came online
+// or dropped off, so the caller can update the POV controls.
+function stepPilot(pilot, dt, now) {
+  const wasActive = pilot.active;
+  pilot.active = Boolean(pilot.target) && now - pilot.lastLiveAt < PILOT_ACTIVE_MS;
+  if (!pilot.active) {
+    pilot.suit3d.setVisible(false);
+    pilot.tag.show = false;
+    pilot.trail.decay();
+    return wasActive;
+  }
+
+  const f = pilot.flight;
+  if (!wasActive || !pilot.render) {
+    // (Re)appearing: start exactly at the reported spot, at rest.
+    pilot.render = { ...pilot.target };
+    Object.assign(f, { speed: 0, vspeed: 0, accel: 0, turn: 0, lean: 0, leanRate: 0, bank: 0, bankRate: 0 });
+    pilot.trail.clear();
+  }
+
+  // Snapshot interpolation from the ~30 Hz stream to the frame rate.
+  const r = pilot.render;
+  const from = { longitude: r.longitude, latitude: r.latitude, altitude: r.altitude, heading: r.heading };
+  const k = 1 - Math.pow(1 - NET_LERP, dt * 60);
+  r.longitude = lerp(r.longitude, pilot.target.longitude, k);
+  r.latitude = lerp(r.latitude, pilot.target.latitude, k);
+  r.altitude = lerp(r.altitude, pilot.target.altitude, k);
+  r.heading = easeHeading(r.heading, pilot.target.heading, k);
+
+  if (dt > 0) {
+    const north = (r.latitude - from.latitude) * 111320;
+    const east = (r.longitude - from.longitude) * 111320 * Math.cos(Cesium.Math.toRadians(r.latitude));
+    const headingRad = Cesium.Math.toRadians(r.heading);
+    const forward = (north * Math.cos(headingRad) + east * Math.sin(headingRad)) / dt;
+    const yawRate = normalizeDeg(r.heading - from.heading) / dt;
+    const previousSpeed = f.speed;
+    f.speed = smooth(f.speed, forward, MOTION_LERP, dt);
+    f.vspeed = smooth(f.vspeed, (r.altitude - from.altitude) / dt, MOTION_LERP, dt);
+    f.accel = smooth(f.accel, (f.speed - previousSpeed) / dt, ACCEL_LERP, dt);
+    f.turn = smooth(f.turn, Math.max(-1, Math.min(1, yawRate / YAW_RATE)), ANGLE_LERP, dt);
+    springTo(f, 'lean', 'leanRate', leanTarget(f), dt);
+    const bankTarget = f.turn * Math.min(MAX_BANK, BANK_HOVER + Math.abs(f.speed) * BANK_PER_MS);
+    springTo(f, 'bank', 'bankRate', bankTarget, dt);
+  }
+
+  pilot.view = {
+    longitude: r.longitude,
+    latitude: r.latitude,
+    altitude: r.altitude,
+    heading: r.heading,
+    lean: f.lean,
+    bank: f.bank,
+    roll: 0,
+    hover: 0,
+    thrust: thrustDrivers(f),
+  };
+  pilot.suit3d.setVisible(true);
+  pilot.suit3d.setTransform(pilot.view);
+  pilot.tag.show = true;
+
+  if (Math.abs(f.speed) > 2) {
+    const origin = pilot.suit3d.bootAnchor(pilot.trailOrigin);
+    if (origin) pilot.trail.push(origin, Math.min(1, Math.abs(f.speed) / FX_FULL_SPEED));
+  } else {
+    pilot.trail.decay();
+  }
+  return !wasActive;
+}
+
+function activePilots() {
+  return [...pilots.values()].filter((p) => p.active);
+}
+
+// Refresh the POV readout and the switch button (visible only while another
+// pilot is airborne, labelled with the suit it would switch to).
+function refreshPov(attention = false) {
+  const ids = [null, ...activePilots().map((p) => p.id)];
+  const next = ids[(ids.indexOf(povId) + 1) % ids.length];
+  setPov(displayName(povId ?? PLAYER_ID));
+  setPovButton(ids.length > 1, displayName(next ?? PLAYER_ID), attention);
+}
+
+// Cycle the chase camera: our suit -> each airborne pilot -> back to ours.
+function cyclePov() {
+  const ids = [null, ...activePilots().map((p) => p.id)];
+  if (ids.length < 2 && povId === null) return;
+  povId = ids[(ids.indexOf(povId) + 1) % ids.length];
+  setJarvis(
+    povId
+      ? `Patching you into ${displayName(povId)}'s suit cam, sir.`
+      : 'Back on your suit, sir.',
   );
-  entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
-    entity.position.getValue(Cesium.JulianDate.now()),
-    hpr,
-  );
+  refreshPov();
 }
 
 async function boot() {
@@ -484,43 +711,54 @@ async function boot() {
 
   hideBanner();
 
-  const suitEntity = makeSuitEntity(viewer);
+  const quality = getRenderQuality();
+  const gpuShort =
+    quality.gpu.match(/(?:GeForce |Radeon )?(?:RTX|GTX|RX|Arc)\s?\w+|Radeon[^(,]*|Iris[^(,]*|UHD[^(,]*/i)?.[0].trim() ??
+    'GPU';
+  setGfx(`${quality.label} · ${gpuShort}`, quality.gpu);
+
+  homewoodBoundary = initHomewoodBoundary(viewer);
+  const overlay = initSuitOverlay(viewer, '/iron_man_ucm.glb');
+  const suit3d = overlay.createSuit({ name: PLAYER_ID });
   const trail = initTrail(viewer);
+  const trailOrigin = new Cesium.Cartesian3();
   updateChaseCamera(viewer, suit);
 
-  // Remote pilots (everyone that isn't us). Keyed by player_id; each holds its
-  // Cesium entity, the latest transform from the DB (`target`), and an eased
-  // `render` transform for smooth 30 Hz -> 60 fps motion.
-  const others = new Map();
+  // Our own name tag only shows while the camera is on another pilot.
+  let localView = suitView(suit);
+  const localTag = makeNameTag(viewer, displayName(PLAYER_ID), '#37e7ff', () => localView);
+  localTag.show = false;
 
-  function upsertOther(row) {
-    const target = {
-      longitude: row.positionX,
-      altitude: row.positionY,
-      latitude: row.positionZ,
-      heading: row.yaw,
-      pitch: row.pitch,
-      roll: row.roll,
-    };
-    const existing = others.get(row.playerId);
-    if (existing) {
-      existing.target = target;
-    } else {
-      others.set(row.playerId, {
-        entity: makeOtherEntity(viewer, row.playerId),
-        target,
-        render: { ...target },
-        init: true,
-      });
+  // Camera POV switch: V, or the HUD button that appears once another pilot
+  // is airborne.
+  refreshPov();
+  onPovButton(cyclePov);
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyV' && !e.repeat) cyclePov();
+  });
+
+  function upsertPilot(row, live) {
+    let pilot = pilots.get(row.playerId);
+    if (!pilot) {
+      pilot = createPilot(viewer, overlay, row.playerId);
+      pilots.set(row.playerId, pilot);
     }
+    receivePilotRow(pilot, row, live);
   }
 
-  function removeOther(playerId) {
-    const o = others.get(playerId);
-    if (o) {
-      viewer.entities.remove(o.entity);
-      others.delete(playerId);
-    }
+  function dropPilot(playerId) {
+    const pilot = pilots.get(playerId);
+    if (!pilot) return;
+    removePilot(viewer, pilot);
+    if (povId === playerId) povId = null;
+    refreshPov();
+  }
+
+  // Dev: feed a player_state-shaped row as if it came from SpacetimeDB, to
+  // exercise remote suits and the POV switch without a phone.
+  if (import.meta.env.DEV) {
+    window.__pilots = pilots;
+    window.__pilotRow = (row, live = true) => upsertPilot(row, live);
   }
 
   // SpacetimeDB link: mirror the client-computed transform into the DB and
@@ -536,27 +774,16 @@ async function boot() {
         setJarvis('SpacetimeDB link established. Telemetry streaming, sir.');
         console.log('[stdb] online — join_game sent, streaming update_orientation');
       } else if (s === 'offline' || s === 'error') {
-        net = null;
         console.warn(`[stdb] link ${s} — flying on local physics only`);
       }
     },
-    onPlayer: (row) => {
-      // Map the position_x/y/z convention back to lon/lat/alt. Our own row
-      // drives the local suit; every other row is a remote pilot (the judge).
-      if (row.playerId === PLAYER_ID) {
-        net = {
-          longitude: row.positionX,
-          altitude: row.positionY,
-          latitude: row.positionZ,
-          heading: row.yaw,
-          pitch: row.pitch,
-          roll: row.roll,
-        };
-      } else {
-        upsertOther(row);
-      }
+    onPlayer: (row, live) => {
+      // Our own row confirms the telemetry round-trip. It must not drive the
+      // local chase camera: that row only arrives at NET_SEND_HZ, while the
+      // local simulation runs every frame. All other rows are remote pilots.
+      if (row.playerId !== PLAYER_ID) upsertPilot(row, live);
     },
-    onPlayerLeave: (row) => removeOther(row.playerId),
+    onPlayerLeave: (row) => dropPilot(row.playerId),
   });
   stdb.start();
 
@@ -567,24 +794,10 @@ async function boot() {
     last = now;
     if (dt > 0.1) dt = 0.1; // clamp after tab-out
 
-    let rebooting = false;
-    if (crashedUntil) {
-      // Rebooting after a fatal crash — controls frozen until systems restore.
-      rebooting = true;
-      if (now >= crashedUntil) {
-        suit = spawnState();
-        crashedUntil = 0;
-        lastSurface = undefined;
-        trailClearNeeded = true;
-        setJarvis(JARVIS_LINES.restored);
-        rebooting = false;
-      }
-    } else {
-      stepFlight(dt);
-      collisionStep(viewer, suitEntity);
-      if (isGloveConnected() && consumeFist()) {
-        triggerRepulsor(viewer);
-      }
+    stepFlight(dt);
+    collisionStep(viewer);
+    if (isGloveConnected() && consumeFist()) {
+      triggerRepulsor(viewer);
     }
     stepRepulsor(viewer, now);
 
@@ -593,15 +806,15 @@ async function boot() {
       trailClearNeeded = false;
     }
 
-    // Idle levitation: ease the bob in when still, out when flying/rebooting.
+    // Idle levitation: ease the bob in when still, out when flying.
     hoverClock += dt;
-    hoverBlend = smooth(hoverBlend, idle && !rebooting ? 1 : 0, 0.05, dt);
+    hoverBlend = smooth(hoverBlend, idle ? 1 : 0, 0.05, dt);
     suit.hover = Math.sin(hoverClock * HOVER_OMEGA) * HOVER_AMP * hoverBlend;
 
     // --- SpacetimeDB round-trip ---
     // Push our client-computed transform (throttled to NET_SEND_HZ), then let
     // the subscription hand the row back via onPlayer -> `net`.
-    if (stdb && !rebooting && now - lastNetSendAt >= NET_SEND_MS) {
+    if (stdb && now - lastNetSendAt >= NET_SEND_MS) {
       lastNetSendAt = now;
       stdb.pushTransform({
         positionX: suit.longitude,
@@ -614,63 +827,38 @@ async function boot() {
       });
     }
 
-    // Render from the server-echoed position when online; else local physics.
-    let view;
-    if (stdb && stdb.online && net) {
-      if (!renderInit) {
-        Object.assign(renderPos, net);
-        renderInit = true;
-      }
-      const k = 1 - Math.pow(1 - NET_LERP, dt * 60);
-      renderPos.longitude = lerp(renderPos.longitude, net.longitude, k);
-      renderPos.latitude = lerp(renderPos.latitude, net.latitude, k);
-      renderPos.altitude = lerp(renderPos.altitude, net.altitude, k);
-      renderPos.pitch = lerp(renderPos.pitch, net.pitch, k);
-      renderPos.roll = lerp(renderPos.roll, net.roll, k);
-      renderPos.heading = easeHeading(renderPos.heading, net.heading, k);
-      // Position/orientation come from the DB round-trip; bank/hover/speed are
-      // local visual-only extras that aren't part of the schema.
-      view = {
-        longitude: renderPos.longitude,
-        latitude: renderPos.latitude,
-        altitude: renderPos.altitude,
-        heading: renderPos.heading,
-        pitch: renderPos.pitch,
-        roll: renderPos.roll,
-        bank: suit.bank,
-        hover: suit.hover,
-        speed: suit.speed,
-      };
-    } else {
-      renderInit = false; // reseed from net when the link (re)appears
-      view = suit;
-    }
+    // The local player is always rendered from the immediate client state.
+    // Networking continues to replicate it, but no server tick can pull the
+    // hero suit or its camera backwards between visual frames.
+    const view = suitView(suit);
+    localView = view;
+    suit3d.setTransform(view);
 
-    updateSuitEntity(suitEntity, view);
-    updateChaseCamera(viewer, view);
-
-    // Remote pilots (the judge): ease each entity from its last DB transform
-    // toward the newest one, same snapshot interpolation we use for our row.
-    if (others.size) {
-      const k = 1 - Math.pow(1 - NET_LERP, dt * 60);
-      for (const o of others.values()) {
-        if (o.init) {
-          Object.assign(o.render, o.target);
-          o.init = false;
+    // Remote pilots (the judge): interpolate, animate, and announce arrivals.
+    for (const pilot of pilots.values()) {
+      if (!stepPilot(pilot, dt, now)) continue;
+      if (pilot.active) {
+        setJarvis(JARVIS_LINES.pilotJoined(pilot.name));
+        refreshPov(true);
+      } else {
+        if (povId === pilot.id) {
+          povId = null;
+          setJarvis(JARVIS_LINES.povLost(pilot.name));
         } else {
-          o.render.longitude = lerp(o.render.longitude, o.target.longitude, k);
-          o.render.latitude = lerp(o.render.latitude, o.target.latitude, k);
-          o.render.altitude = lerp(o.render.altitude, o.target.altitude, k);
-          o.render.pitch = lerp(o.render.pitch, o.target.pitch, k);
-          o.render.roll = lerp(o.render.roll, o.target.roll, k);
-          o.render.heading = easeHeading(o.render.heading, o.target.heading, k);
+          setJarvis(JARVIS_LINES.pilotLeft(pilot.name));
         }
-        updateOtherEntity(o.entity, o.render);
+        refreshPov();
       }
     }
+
+    // The chase camera follows whichever pilot we're watching.
+    const watched = povId ? pilots.get(povId) : null;
+    updateChaseCamera(viewer, watched ? watched.view : view);
+    localTag.show = Boolean(watched);
 
     // Speed-driven feel: FOV punch, edge blur, and vignette all ramp together.
-    const speedRatio = Math.min(1, Math.abs(suit.speed) / FX_FULL_SPEED);
+    const viewSpeed = watched ? watched.flight.speed : suit.speed;
+    const speedRatio = Math.min(1, Math.abs(viewSpeed) / FX_FULL_SPEED);
     if (viewer.camera.frustum.fov !== undefined) {
       viewer.camera.frustum.fov = Cesium.Math.toRadians(
         BASE_FOV_DEG + speedRatio * SPEED_FOV_DEG,
@@ -679,31 +867,79 @@ async function boot() {
     updateSpeedFx(speedRatio);
 
     // Afterburner trail: extend it while flying, let it drain when parked.
-    if (!rebooting && Math.abs(suit.speed) > 2) {
-      trail.push(suit.longitude, suit.latitude, suit.altitude, speedRatio);
+    // It streams from the boot jets, wherever the posed legs put them.
+    if (Math.abs(suit.speed) > 2) {
+      const origin =
+        suit3d.bootAnchor(trailOrigin) ??
+        Cesium.Cartesian3.fromDegrees(
+          suit.longitude,
+          suit.latitude,
+          suit.altitude,
+          Cesium.Ellipsoid.WGS84,
+          trailOrigin,
+        );
+      trail.push(origin, Math.min(1, Math.abs(suit.speed) / FX_FULL_SPEED));
     } else {
       trail.decay();
     }
 
-    // Show height above the ground/rooftops (AGL) when we know the surface.
-    const agl =
-      lastSurface !== undefined ? Math.max(0, suit.altitude - lastSurface) : suit.altitude;
+    if (watched) {
+      // Telemetry for the pilot on camera. Their ground height is sampled only
+      // while we watch them, and at a low rate (it's a GPU read-back).
+      const w = watched.view;
+      if (now - watched.surfaceSampledAt > REMOTE_SURFACE_MS) {
+        watched.surfaceSampledAt = now;
+        const s = sampleSurfaceHeight(viewer, w.longitude, w.latitude, []);
+        if (
+          s !== undefined &&
+          s <= w.altitude + MAX_SURFACE_ABOVE_SUIT &&
+          s >= w.altitude - MAX_SURFACE_BELOW_SUIT
+        ) {
+          watched.surface = s;
+        }
+      }
+      const pitch = (watched.flight.vspeed / CLIMB_RATE) * 18;
+      updateAttitude(pitch, watched.flight.bank, w.heading);
+      setGpws(false);
+      updateHUD({
+        altitude:
+          watched.surface !== undefined ? Math.max(0, w.altitude - watched.surface) : w.altitude,
+        speed: Math.abs(watched.flight.speed),
+        pitch,
+        roll: watched.flight.bank,
+        heading: w.heading,
+        mode: watched.mode,
+        health: watched.health,
+      });
+    } else {
+      // Show height above the ground/rooftops (AGL) when we know the surface.
+      const agl =
+        lastSurface !== undefined ? Math.max(0, suit.altitude - lastSurface) : suit.altitude;
 
-    // Animated attitude indicator + heading tape.
-    updateAttitude(suit.pitch, suit.roll + suit.bank, suit.heading);
+      // Animated attitude indicator + heading tape.
+      updateAttitude(suit.pitch, suit.roll + suit.bank, suit.heading);
 
-    // Ground proximity warning: flash when low and not mid-reboot.
-    setGpws(!rebooting && agl < GPWS_ALT);
+      // Ground proximity warning: flash when low.
+      setGpws(agl < GPWS_ALT);
 
-    updateHUD({
-      altitude: agl,
-      speed: Math.abs(suit.speed),
-      pitch: suit.pitch,
-      roll: suit.roll,
-      heading: suit.heading,
-      mode: suit.mode,
-      health: suit.health,
-    });
+      updateHUD({
+        altitude: agl,
+        speed: Math.abs(suit.speed),
+        pitch: suit.pitch,
+        roll: suit.roll,
+        heading: suit.heading,
+        mode: suit.mode,
+        health: suit.health,
+      });
+    }
+
+    // Present both WebGL layers from this single frame. Cesium goes first and
+    // the camera-relative Three suits are composited immediately after it.
+    viewer.resize();
+    viewer.render();
+    overlay.render();
+
+    if (import.meta.env.DEV) window.__suitView = view;
 
     requestAnimationFrame(frame);
   }

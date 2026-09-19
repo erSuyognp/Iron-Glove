@@ -15,7 +15,7 @@ extra gameplay and flight-feel features added on top:
 - ✅ Keyboard flight with a weighted flight model (0.08 lerp, framerate-independent)
 - ✅ Third-person chase camera
 - ✅ HUD: ALT (height above ground), SPD, PITCH, ROLL, HDG, MODE, suit HP, JARVIS ticker
-- ✅ **Low flying + crash damage** — skim rooftops, hit buildings to lose health, auto-reboot at 0 HP
+- ✅ **Low flying** — skim rooftops; buildings and the ground stop the suit (no collision damage)
 - ✅ **Barrel roll** (Q/E rolls the whole view, auto-levels)
 - ✅ **Speed effects** — edge motion blur + vignette + FOV punch that ramp with velocity
 - ✅ **In-flight avionics** — animated artificial horizon / pitch ladder, bank arc, scrolling heading tape
@@ -111,27 +111,41 @@ whenever the module schema changes.
 | `Q` / `E` | Roll left / right (barrel roll) |
 | `Space` | Boost (afterburner) |
 | `R` | Reset to spawn |
+| `V` | Switch camera POV between your suit and other airborne pilots |
 
-- Fly into a building or hit the ground hard to take damage; JARVIS calls it out
-  and the suit auto-reboots when health hits 0.
+- Buildings and the ground stop the suit, but collisions never cost health.
 - **PULL UP** flashes when you drop below ~45m above ground.
 - Let go of all controls and the suit levitates in place.
+- When a second pilot (e.g. the judge on the phone controller) starts
+  streaming, their suit appears with amber thrusters, JARVIS announces them,
+  and a **POV ▸ JUDGE** button appears in the HUD — click it or press `V` to
+  follow their suit. If their feed stops for 3 s the camera returns to yours.
 
 ## Performance & GPU
 
-The app auto-detects the GPU the browser landed on and adapts:
+The app auto-detects the GPU the browser landed on and picks a quality tier
+(shown in the HUD as `GFX`, and in the console as `[IRON GLOVE] GPU: …`):
 
-- **Integrated GPU** → lean quality (1× resolution, MSAA off) for smooth FPS.
-- **Discrete NVIDIA / RTX / Arc** → HIGH quality (full device-pixel-ratio + 4× MSAA)
-  automatically. Check the console for `[IRON GLOVE] GPU: … — HIGH/LEAN quality`.
+- **LEAN** — integrated GPUs: 1× resolution, no MSAA, relaxed tile detail.
+- **HIGH** — other discrete GPUs: full device-pixel-ratio, 4× MSAA, HDR, sharper tiles.
+- **ULTRA** — RTX 30/40/50-series, Radeon RX 7000/9000, Arc B-series: HIGH plus
+  the sharpest tiles, a 4 GB tile cache, and 1.5× supersampling on low-DPI displays.
 
-If you have a discrete GPU (e.g. RTX) but the log says `LEAN`, the browser is
+Force a tier with `?quality=lean|high|ultra`, e.g. `http://localhost:5173/?quality=ultra`.
+
+If you have a discrete GPU (e.g. RTX) but the HUD says `LEAN`, the browser is
 using the integrated GPU. Assign the Claude app / browser to the discrete card
-in **Windows → Graphics settings** and **NVIDIA Control Panel → Program
-Settings**, plug in on Best Performance power, and restart.
+in **Windows → Settings → System → Display → Graphics** (choose *High
+performance*) and **NVIDIA Control Panel → Program Settings**, plug in on Best
+Performance power, and restart it.
 
-Other tuning applied: ~1.5 GB tile cache, 3× parallel tile requests for faster
-streaming, and throttled mesh-height sampling to avoid per-frame GPU stalls.
+Realism settings on every tier: real sunlight at a fixed late-afternoon time
+(sky and atmospheric haze follow it), Cesium's globe hidden under Google's
+planet-wide tiles, and every level of detail refined in order so the horizon
+never shows the coarse placeholder tiles as a dark band.
+
+Other tuning applied: 3× parallel tile requests for faster streaming, and
+throttled mesh-height sampling to avoid per-frame GPU stalls.
 
 ## Environment variables (`client/.env`)
 

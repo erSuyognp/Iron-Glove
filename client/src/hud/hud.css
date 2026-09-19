@@ -148,6 +148,7 @@ html, body {
 .stat-v { font-size: 22px; font-weight: bold; text-align: right; }
 .stat-u { font-size: 10px; opacity: 0.6; }
 .stat.mode .stat-v { font-size: 16px; color: var(--iron-gold); text-align: left; }
+.stat.mode.small .stat-v { font-size: 12px; white-space: nowrap; }
 
 /* Artificial horizon / pitch ladder */
 .attitude {
@@ -249,6 +250,18 @@ html, body {
   opacity: 0.4;
   cursor: not-allowed;
   box-shadow: none;
+}
+/* Camera POV switch — appears when another pilot is airborne. */
+.hud-btn.pov {
+  border-color: var(--iron-gold);
+  color: var(--iron-gold);
+  text-shadow: 0 0 8px #c8a02088;
+  box-shadow: 0 0 14px #c8a02044;
+}
+.hud-btn.pov .key { border-color: #c8a02088; }
+.hud-btn.pov.pulse { animation: pov-pulse 0.9s ease-in-out 5; }
+@keyframes pov-pulse {
+  50% { box-shadow: 0 0 26px #c8a020aa; background: #c8a02022; }
 }
 
 /* JARVIS ticker */

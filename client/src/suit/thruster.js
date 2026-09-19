@@ -1,18 +1,19 @@
 import * as Cesium from 'cesium';
 
 // Afterburner trail: a glowing polyline of the suit's recent positions that
-// widens and shifts from cyan toward hot orange as throttle climbs.
+// widens and shifts from its cool colour toward a hot one as throttle climbs
+// (cyan -> orange by default; a second pilot's trail burns amber -> red).
 
 const MAX_POINTS = 45;
 
-export function initTrail(viewer) {
+export function initTrail(viewer, { cool: coolCss = '#22ccff', hot: hotCss = '#ff7a1a' } = {}) {
   const points = [];
   let width = 3;
-  const color = Cesium.Color.fromCssColorString('#22ccff').clone();
-  const cool = Cesium.Color.fromCssColorString('#22ccff');
-  const hot = Cesium.Color.fromCssColorString('#ff7a1a');
+  const cool = Cesium.Color.fromCssColorString(coolCss);
+  const hot = Cesium.Color.fromCssColorString(hotCss);
+  const color = cool.clone();
 
-  viewer.entities.add({
+  const entity = viewer.entities.add({
     name: 'Afterburner trail',
     polyline: {
       positions: new Cesium.CallbackProperty(() => points, false),
@@ -26,9 +27,9 @@ export function initTrail(viewer) {
   });
 
   return {
-    // Append the current position; ratio 0..1 drives width + heat.
-    push(longitude, latitude, altitude, ratio) {
-      points.push(Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude));
+    // Append a world position (the boot jets); ratio 0..1 drives width + heat.
+    push(position, ratio) {
+      points.push(Cesium.Cartesian3.clone(position));
       if (points.length > MAX_POINTS) points.shift();
       const r = Math.max(0, Math.min(1, ratio));
       width = 3 + r * 13;
@@ -40,6 +41,9 @@ export function initTrail(viewer) {
     },
     clear() {
       points.length = 0;
+    },
+    destroy() {
+      viewer.entities.remove(entity);
     },
   };
 }

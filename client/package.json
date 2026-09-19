@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "cesium": "^1.115.0",
-    "spacetimedb": "2.10.*"
+    "spacetimedb": "2.10.*",
+    "three": "^0.165.0"
   },
   "devDependencies": {
     "vite": "^5.4.0",

@@ -31,6 +31,43 @@ export function initHUD() {
   els.connectGlove = document.getElementById('btn-connect-glove');
   els.help = document.getElementById('hud-help');
   els.repulsor = document.getElementById('repulsor-flash');
+  els.pov = document.getElementById('hud-pov');
+  els.povBtn = document.getElementById('btn-pov');
+  els.gfx = document.getElementById('hud-gfx');
+}
+
+// Whose suit the camera is following.
+export function setPov(name) {
+  if (els.pov) els.pov.textContent = name;
+}
+
+// Show the POV switch (only while another pilot is airborne) labelled with the
+// suit it would switch to; `attention` pulses it when a new pilot arrives.
+export function setPovButton(visible, nextName, attention = false) {
+  const btn = els.povBtn;
+  if (!btn) return;
+  btn.hidden = !visible;
+  btn.innerHTML = `POV ▸ ${nextName} <span class="key">V</span>`;
+  if (attention) {
+    btn.classList.remove('pulse');
+    void btn.offsetWidth;
+    btn.classList.add('pulse');
+  }
+}
+
+export function onPovButton(handler) {
+  if (!els.povBtn || !handler) return;
+  els.povBtn.addEventListener('click', (e) => {
+    e.currentTarget.blur();
+    handler();
+  });
+}
+
+// Render tier + GPU, so it's obvious whether the discrete card is in use.
+export function setGfx(text, detail = '') {
+  if (!els.gfx) return;
+  els.gfx.textContent = text;
+  els.gfx.title = detail;
 }
 
 export function onConnectGlove(handler) {
