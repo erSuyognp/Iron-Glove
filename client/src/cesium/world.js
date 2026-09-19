@@ -5,12 +5,10 @@ const CESIUM_TOKEN = import.meta.env.VITE_CESIUM_TOKEN;
 // same either way — but supported in case you prefer Google billing over Ion.
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
-// JHU Homewood campus center (Keyser Quad) — the spawn point.
-export const JHU_HOMEWOOD = {
-  longitude: -76.6205,
-  latitude: 39.3299,
-  altitude: 150, // meters above ground
-};
+// JHU Homewood campus center (Keyser Quad). Defined in the world registry;
+// re-exported here for the modules that anchor to campus regardless of the
+// active world (the combat frame in combat/space.js).
+export { JHU_HOMEWOOD } from '../worlds/registry.js';
 
 export function hasValidToken() {
   return (

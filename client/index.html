@@ -23,7 +23,7 @@
     <div class="hud-top">
       <div class="hud-title">
         <span class="hud-title-main">IRON GLOVE</span>
-        <span class="hud-title-sub">HOMEWOOD</span>
+        <span id="hud-world-sub" class="hud-title-sub">HOMEWOOD</span>
       </div>
       <div class="hud-suit">
         <span class="hud-suit-label">SUIT</span>
@@ -39,6 +39,12 @@
           </div>
           <div class="combat-row"><span class="combat-k">TARGET</span><span id="hud-lock" class="combat-v lock" data-state="CLEAR">CLEAR</span></div>
         </div>
+        <!-- Environmental data status: source, coverage and LIVE / HISTORICAL DEMO (environmental/) -->
+        <div id="hud-env" class="hud-env" hidden>
+          <div class="env-row"><span class="env-k">ENV DATA</span><span id="hud-env-badge" class="env-badge" data-tone="loading">LOADING</span></div>
+          <span id="hud-env-source" class="env-line"></span>
+          <span id="hud-env-range" class="env-line"></span>
+        </div>
       </div>
     </div>
 
@@ -53,6 +59,12 @@
       <div class="stat mode"><span class="stat-k">LINK</span><span id="hud-net" class="stat-v">…</span></div>
       <div class="stat mode"><span class="stat-k">POV</span><span id="hud-pov" class="stat-v">…</span></div>
       <div class="stat mode small"><span class="stat-k">GFX</span><span id="hud-gfx" class="stat-v">…</span></div>
+      <!-- Active world (worlds/registry.js); the selector reloads into another -->
+      <div class="stat mode small"><span class="stat-k">WORLD</span><span id="hud-world" class="stat-v">HOMEWOOD</span></div>
+      <div class="stat mode small"><span class="stat-k">OPS</span><span id="hud-ops" class="stat-v">…</span></div>
+      <div class="hud-actions">
+        <select id="world-select" class="hud-select" aria-label="World" title="Switch world (reloads)"></select>
+      </div>
       <div class="hud-actions">
         <button type="button" id="btn-connect-glove" class="hud-btn">CONNECT GLOVE</button>
       </div>
@@ -61,8 +73,59 @@
       </div>
     </div>
 
+    <!-- Environmental evidence panel: the selected observation, field by field,
+         with its priority and provenance (environmental/evidencePanel.js) -->
+    <aside id="evidence" class="evidence" hidden aria-live="polite">
+      <div class="evidence-head">
+        <span class="evidence-title">ENVIRONMENTAL OBSERVATION</span>
+        <button type="button" id="evidence-close" class="evidence-close" aria-label="Close">×</button>
+      </div>
+      <dl id="evidence-fields" class="evidence-fields"></dl>
+      <div class="evidence-priority">
+        <span class="evidence-k">OBSERVATION PRIORITY</span>
+        <span id="evidence-priority" class="evidence-level" data-level="LOW">LOW</span>
+        <ul id="evidence-reasons" class="evidence-reasons"></ul>
+      </div>
+      <div id="evidence-actions" class="evidence-actions"></div>
+      <div id="evidence-provenance" class="evidence-provenance"></div>
+      <p class="evidence-disclaimer">
+        Research/demo decision support. Satellite detections may contain uncertainty and are not ground truth.
+      </p>
+    </aside>
+
     <!-- Heading tape (scrolls with heading) -->
     <div id="heading-tape" class="heading-tape"></div>
+
+    <!-- Inspection mission: the operator's accepted target, with live
+         distance / turn guidance (environmental/mission.js). Flight is manual. -->
+    <div id="hud-mission" class="hud-mission" hidden data-status="NONE">
+      <div class="mission-head">
+        <span class="mission-k">MISSION</span>
+        <span id="mission-status" class="mission-status">ACTIVE</span>
+      </div>
+      <span id="mission-title" class="mission-title">Inspect satellite thermal anomaly</span>
+      <div class="mission-grid">
+        <span class="mission-k">DISTANCE</span><span id="mission-dist" class="mission-v">—</span>
+        <span class="mission-k">HEADING</span><span id="mission-turn" class="mission-v">—</span>
+        <span class="mission-k">SOURCE</span><span id="mission-source" class="mission-v">—</span>
+        <span class="mission-k">TARGET</span><span id="mission-target" class="mission-v">—</span>
+      </div>
+      <div class="mission-actions">
+        <button type="button" id="mission-abort" class="hud-btn small">ABORT</button>
+        <button type="button" id="mission-clear" class="hud-btn small" hidden>CLEAR</button>
+      </div>
+    </div>
+
+    <!-- System recommendation: the human accepts or ignores, nothing starts on its own -->
+    <div id="hud-recommend" class="hud-recommend" hidden>
+      <span class="recommend-k">RECOMMENDED</span>
+      <span id="recommend-text" class="recommend-text"></span>
+      <span id="recommend-why" class="recommend-why"></span>
+      <div class="mission-actions">
+        <button type="button" id="recommend-accept" class="hud-btn small live">ACCEPT</button>
+        <button type="button" id="recommend-ignore" class="hud-btn small">IGNORE</button>
+      </div>
+    </div>
 
     <!-- Ground proximity warning -->
     <div id="gpws" class="gpws">PULL UP</div>

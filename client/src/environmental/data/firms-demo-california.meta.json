@@ -1,0 +1,26 @@
+{
+  "label": "HISTORICAL DEMO",
+  "status": "HISTORICAL",
+  "description": "Real NASA FIRMS active-fire detections, bundled unmodified as an offline demo dataset. Not live: observations are from the acquisition window below.",
+  "source": "NASA FIRMS",
+  "sourceUrl": "https://firms.modaps.eosdis.nasa.gov/data/active_fire/suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_USA_contiguous_and_Hawaii_7d.csv",
+  "product": "SUOMI_VIIRS_C2 (VIIRS 375 m active fire, Collection 2, NRT)",
+  "instrument": "VIIRS",
+  "satellite": "Suomi NPP",
+  "satelliteCode": "N",
+  "version": "2.0NRT",
+  "coverageFile": "USA contiguous and Hawaii, last 7 days",
+  "subset": "Rows inside the California bounding box west=-124.5 south=32.5 east=-114.0 north=42.0 (includes border strips of neighbouring states and Baja California)",
+  "bbox": { "west": -124.5, "south": 32.5, "east": -114.0, "north": 42.0 },
+  "rowCount": 981,
+  "acquired": { "from": "2026-09-12", "to": "2026-09-19", "timezone": "UTC" },
+  "upstreamLastModified": "2026-09-19T21:49:42Z",
+  "downloadedAt": "2026-09-19T22:09:11Z",
+  "columns": "latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,confidence,version,bright_ti5,frp,daynight",
+  "notes": [
+    "The public FIRMS CSV has no `instrument` column; VIIRS is the product's instrument, carried into each observation from this descriptor, not measured per row.",
+    "No values were edited, filled or derived. Fields absent from the source stay null and display as N/A.",
+    "Attribute definitions: https://www.earthdata.nasa.gov/data/instruments/viirs/viirs-i-band-375-m-active-fire-data"
+  ],
+  "credit": "NASA FIRMS (Fire Information for Resource Management System), LANCE/EOSDIS. We acknowledge the use of data from NASA's FIRMS, part of NASA's Earth Science Data and Information System (ESDIS)."
+}

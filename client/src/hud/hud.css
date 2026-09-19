@@ -240,6 +240,190 @@ html, body {
   align-items: flex-end;
   gap: 6px;
 }
+/* The drones fly over JHU; their readouts mean nothing in an environmental
+   world, so the block is hidden there (the combat code itself keeps running). */
+.hud[data-world-mode='wildfire'] .hud-combat { display: none; }
+
+/* ---------------- Environmental data status ---------------- */
+/* Provenance for whatever environmental layer is loaded: source and sensor,
+   coverage window, and whether it is LIVE or a HISTORICAL DEMO. */
+.hud-env {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.hud-env[hidden] { display: none; }
+.env-row { display: flex; align-items: center; gap: 10px; }
+.env-k { font-size: 10px; letter-spacing: 3px; opacity: 0.8; }
+.env-badge {
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+}
+.env-badge[data-tone='loading'] { color: var(--iron-cyan-dim); }
+.env-badge[data-tone='live'] { color: var(--iron-cyan); }
+.env-badge[data-tone='historical'] { color: var(--iron-gold); text-shadow: 0 0 8px #c8a02088; }
+.env-badge[data-tone='error'] { color: var(--iron-red); text-shadow: 0 0 8px var(--iron-red); }
+.env-line { font-size: 11px; letter-spacing: 1px; opacity: 0.8; white-space: nowrap; }
+
+/* ---------------- Environmental evidence panel ---------------- */
+/* Right-hand column, mirroring the telemetry stack on the left. Must take
+   clicks (close / actions) even though the HUD itself is pointer-events: none. */
+.evidence {
+  position: absolute;
+  top: 50%;
+  right: 24px;
+  transform: translateY(-50%);
+  width: 300px;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  padding: 14px 16px;
+  background: rgba(10, 14, 26, 0.78);
+  border: 1px solid var(--iron-cyan-dim);
+  border-left: 3px solid var(--iron-gold);
+  border-radius: 6px;
+  pointer-events: auto;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+.evidence[hidden] { display: none; }
+.evidence-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.evidence-title { font-size: 11px; letter-spacing: 3px; color: var(--iron-gold); }
+.evidence-close {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--iron-cyan-dim);
+  border-radius: 3px;
+  color: var(--iron-cyan);
+  font-family: var(--hud-font);
+  font-size: 14px;
+  line-height: 1;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+.evidence-close:hover { background: #00ccff18; }
+.evidence-fields {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px 0;
+  margin: 0;
+}
+.evidence-fields dt { font-size: 9px; letter-spacing: 3px; opacity: 0.7; }
+.evidence-fields dd { margin: 1px 0 4px; font-size: 13px; }
+.evidence-fields dd.na { opacity: 0.45; }
+.evidence-fields dd .sub { display: block; font-size: 10px; opacity: 0.7; letter-spacing: 1px; }
+.evidence-fields dd[data-status='LIVE'] { color: var(--iron-cyan); }
+.evidence-fields dd[data-status='RECENT'] { color: #ff9f4a; }
+.evidence-fields dd[data-status='HISTORICAL'] { color: var(--iron-gold); }
+.evidence-priority {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--iron-cyan-dim);
+}
+.evidence-k { display: block; font-size: 9px; letter-spacing: 3px; opacity: 0.7; }
+.evidence-level {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 16px;
+  font-weight: bold;
+  letter-spacing: 4px;
+}
+.evidence-level[data-level='HIGH'] { color: var(--iron-red); text-shadow: 0 0 10px var(--iron-red); }
+.evidence-level[data-level='MEDIUM'] { color: #ff9f4a; text-shadow: 0 0 8px #ff9f4a88; }
+.evidence-level[data-level='LOW'] { color: var(--iron-cyan-dim); text-shadow: none; }
+.evidence-reasons {
+  margin: 6px 0 0;
+  padding-left: 14px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.evidence-reasons li.caution { color: var(--iron-gold); }
+.evidence-reasons li.none { list-style: none; margin-left: -14px; opacity: 0.6; }
+.evidence-actions { display: flex; gap: 8px; margin-top: 10px; }
+.evidence-actions:empty { display: none; }
+.evidence-provenance {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--iron-cyan-dim);
+  font-size: 10px;
+  letter-spacing: 1px;
+  opacity: 0.7;
+  line-height: 1.5;
+}
+.evidence-disclaimer {
+  margin: 8px 0 0;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
+  opacity: 0.55;
+  font-style: italic;
+}
+
+/* ---------------- Inspection mission + recommendation ---------------- */
+/* Top-centre, under the heading tape, so guidance sits where the pilot looks. */
+.hud-mission,
+.hud-recommend {
+  position: absolute;
+  top: 128px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 320px;
+  padding: 10px 14px;
+  background: rgba(10, 14, 26, 0.7);
+  border: 1px solid var(--iron-cyan-dim);
+  border-radius: 6px;
+  pointer-events: auto;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+.hud-mission[hidden],
+.hud-recommend[hidden] { display: none; }
+.hud-mission { border-left: 3px solid var(--iron-gold); }
+.hud-mission[data-status='COMPLETE'] { border-left-color: var(--iron-cyan); }
+.mission-head { display: flex; justify-content: space-between; align-items: center; }
+.mission-k { font-size: 9px; letter-spacing: 3px; opacity: 0.7; }
+.mission-status {
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 3px;
+  color: var(--iron-gold);
+  text-shadow: 0 0 8px #c8a02088;
+}
+.hud-mission[data-status='COMPLETE'] .mission-status { color: var(--iron-cyan); text-shadow: var(--hud-glow); }
+.mission-title { display: block; margin: 4px 0 8px; font-size: 13px; }
+.mission-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 14px;
+  align-items: baseline;
+}
+.mission-v { font-size: 13px; font-weight: bold; }
+#mission-turn.on-course { color: #7fe9ff; }
+.mission-actions { display: flex; gap: 8px; margin-top: 8px; }
+.hud-btn.small { padding: 5px 10px; font-size: 10px; letter-spacing: 2px; }
+
+/* Recommendation sits below the mission block when both are visible. */
+.hud-recommend { border-left: 3px solid var(--iron-cyan); }
+.hud-mission:not([hidden]) ~ .hud-recommend { top: 290px; }
+.recommend-k {
+  font-size: 9px;
+  letter-spacing: 3px;
+  color: var(--iron-cyan);
+  animation: recommend-pulse 1.4s ease-in-out infinite;
+}
+@keyframes recommend-pulse { 50% { opacity: 0.45; } }
+.recommend-text { display: block; margin-top: 4px; font-size: 13px; }
+.recommend-why { display: block; margin-top: 2px; font-size: 10px; opacity: 0.75; }
 .combat-row { display: flex; align-items: center; gap: 10px; }
 .combat-k { font-size: 10px; letter-spacing: 3px; opacity: 0.8; }
 .combat-v { min-width: 22px; font-size: 20px; font-weight: bold; text-align: right; }
@@ -379,6 +563,33 @@ html, body {
   cursor: not-allowed;
   box-shadow: none;
 }
+/* World selector — a compact dropdown styled like the HUD buttons. Choosing a
+   world reloads the page with ?world=<id>. */
+.hud-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(10, 14, 26, 0.75);
+  border: 1px solid var(--iron-cyan);
+  color: var(--iron-cyan);
+  font-family: var(--hud-font);
+  font-size: 11px;
+  letter-spacing: 3px;
+  padding: 8px 28px 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-shadow: var(--hud-glow);
+  box-shadow: 0 0 10px #00ccff33;
+  /* Dropdown chevron, since appearance:none removes the native one. */
+  background-image: linear-gradient(45deg, transparent 50%, var(--iron-cyan) 50%),
+    linear-gradient(135deg, var(--iron-cyan) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.hud-select:hover { background-color: #00ccff18; box-shadow: 0 0 18px #00ccff55; }
+.hud-select:focus { outline: none; }
+.hud-select option { background: var(--iron-bg); color: var(--iron-cyan); }
+
 /* Camera POV switch — appears when another pilot is airborne. */
 .hud-btn.pov {
   border-color: var(--iron-gold);

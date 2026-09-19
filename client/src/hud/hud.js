@@ -207,3 +207,121 @@ export function hideBanner() {
   const banner = document.getElementById('boot-banner');
   if (banner) banner.classList.add('hidden');
 }
+
+// Which world this page is flying: the top-bar subtitle, the browser tab, and
+// a data-world-mode attribute on the HUD root that the stylesheet uses to hide
+// readouts that don't apply to this world (e.g. drone combat outside JHU).
+// world: a registry entry (worlds/registry.js).
+export function setWorld(world) {
+  const sub = document.getElementById('hud-world-sub');
+  if (sub && world.hudLabel) sub.textContent = world.hudLabel;
+  if (world.title) document.title = world.title;
+  const hud = document.getElementById('hud');
+  if (hud) hud.dataset.worldMode = world.environmentMode;
+  const name = document.getElementById('hud-world');
+  if (name && world.hudLabel) name.textContent = world.hudLabel;
+  const ops = document.getElementById('hud-ops');
+  if (ops && world.modeLabel) ops.textContent = world.modeLabel;
+}
+
+// Fill the world selector from the registry and mark the active world.
+// worlds: registry entries with { id, selectorLabel }.
+export function populateWorldSelect(worlds, activeId) {
+  const sel = document.getElementById('world-select');
+  if (!sel) return;
+  sel.innerHTML = '';
+  for (const w of worlds) {
+    const opt = document.createElement('option');
+    opt.value = w.id;
+    opt.textContent = w.selectorLabel ?? w.name;
+    opt.selected = w.id === activeId;
+    sel.appendChild(opt);
+  }
+}
+
+// Environmental data status block. `status` = null hides it; otherwise
+// { badge, tone: 'loading'|'live'|'historical'|'error', source, range, title }.
+export function setEnvData(status) {
+  const root = document.getElementById('hud-env');
+  if (!root) return;
+  root.hidden = !status;
+  if (!status) return;
+  const badge = document.getElementById('hud-env-badge');
+  if (badge) {
+    badge.textContent = status.badge ?? '';
+    badge.dataset.tone = status.tone ?? 'loading';
+    badge.title = status.title ?? '';
+  }
+  const source = document.getElementById('hud-env-source');
+  if (source) source.textContent = status.source ?? '';
+  const range = document.getElementById('hud-env-range');
+  if (range) range.textContent = status.range ?? '';
+}
+
+// Inspection mission readout. `mission` = null hides it; otherwise
+// { status, title, source, target, distance, turn, onCourse }. Strings are
+// pre-formatted by the caller so this stays a dumb view.
+export function setMission(mission) {
+  const root = document.getElementById('hud-mission');
+  if (!root) return;
+  root.hidden = !mission;
+  if (!mission) return;
+  root.dataset.status = mission.status;
+  const set = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text ?? '—';
+  };
+  set('mission-status', mission.status);
+  set('mission-title', mission.title);
+  set('mission-dist', mission.distance);
+  set('mission-turn', mission.turn);
+  set('mission-source', mission.source);
+  set('mission-target', mission.target);
+  document.getElementById('mission-turn')?.classList.toggle('on-course', !!mission.onCourse);
+  const abort = document.getElementById('mission-abort');
+  const clear = document.getElementById('mission-clear');
+  if (abort) abort.hidden = mission.status !== 'ACTIVE';
+  if (clear) clear.hidden = mission.status === 'ACTIVE';
+}
+
+// System recommendation awaiting the operator. `rec` = null hides it;
+// otherwise { text, why }.
+export function setRecommendation(rec) {
+  const root = document.getElementById('hud-recommend');
+  if (!root) return;
+  root.hidden = !rec;
+  if (!rec) return;
+  const text = document.getElementById('recommend-text');
+  if (text) text.textContent = rec.text ?? '';
+  const why = document.getElementById('recommend-why');
+  if (why) why.textContent = rec.why ?? '';
+}
+
+// Mission / recommendation buttons → handlers { accept, ignore, abort, clear }.
+// Buttons blur after a click so Space (boost) doesn't re-press them.
+export function onMissionAction(handlers) {
+  const wire = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el || !fn) return;
+    el.addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      fn();
+    });
+  };
+  wire('recommend-accept', handlers.accept);
+  wire('recommend-ignore', handlers.ignore);
+  wire('mission-abort', handlers.abort);
+  wire('mission-clear', handlers.clear);
+}
+
+// handler(worldId) when the operator picks a world. The control is blurred
+// first so the flight keys don't keep steering the dropdown.
+export function onWorldSelect(handler) {
+  const sel = document.getElementById('world-select');
+  if (!sel || !handler) return;
+  sel.addEventListener('change', (e) => {
+    const id = e.currentTarget.value;
+    e.currentTarget.blur();
+    handler(id);
+  });
+}

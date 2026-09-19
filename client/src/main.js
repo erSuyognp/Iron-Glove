@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
-import { initWorld, hasValidToken, getRenderQuality, JHU_HOMEWOOD } from './cesium/world.js';
+import { initWorld, hasValidToken, getRenderQuality } from './cesium/world.js';
+import { WORLDS, resolveActiveWorld, withWorldParam } from './worlds/registry.js';
 import { updateChaseCamera } from './cesium/camera.js';
 import { initHomewoodBoundary } from './cesium/homewood-boundary.js';
 import { initKeyboard, readAxes, setSpaceFires, consumeFireKey } from './input/keyboard.js';
@@ -29,6 +30,13 @@ import {
   setPovButton,
   onPovButton,
   setGfx,
+  setWorld,
+  populateWorldSelect,
+  onWorldSelect,
+  setEnvData,
+  setMission,
+  setRecommendation,
+  onMissionAction,
   updateCombatHud,
   flashCombat,
 } from './hud/hud.js';
@@ -39,6 +47,18 @@ import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
 import { initTrail } from './suit/thruster.js';
 import { initSuitOverlay } from './suit/player.js';
 import { createStdbClient } from './spacetimedb/client.js';
+import { loadFirmsObservations, DATASET_KIND } from './environmental/index.js';
+import { createWildfireLayer } from './environmental/wildfireLayer.js';
+import { createEvidencePanel } from './environmental/evidencePanel.js';
+import { briefObservation } from './environmental/briefing.js';
+import { groundDistance, bearingTo, formatDistance, compassPoint } from './environmental/geo.js';
+import { createMissionState, recommend, MISSION_STATUS } from './environmental/mission.js';
+import { createMissionMarker } from './environmental/missionMarker.js';
+
+// ---- Active world ----
+// Where we fly, chosen with ?world=<id> (see worlds/registry.js). Fixed for
+// the life of the page; the world selector reloads with a new id.
+const WORLD = resolveActiveWorld();
 
 // ---- Flight tuning ----
 const MAX_SPEED = 60; // m/s forward
@@ -64,8 +84,10 @@ const BASE_FOV_DEG = 60;
 const SPEED_FOV_DEG = 16; // extra FOV at full speed
 // Speed at which effects (blur / vignette / FOV) reach full intensity.
 const FX_FULL_SPEED = MAX_SPEED * 1.6;
-const MIN_ALT = 30; // safety floor (only used if the mesh can't be sampled)
-const MAX_ALT = 900;
+// Absolute altitude clamps, per world: a safety floor (only matters if the
+// mesh can't be sampled) and a ceiling.
+const MIN_ALT = WORLD.flight.minAlt;
+const MAX_ALT = WORLD.flight.maxAlt;
 // A depth sample is only trustworthy when it is at or below the suit. Fresh
 // photogrammetry LODs can otherwise briefly report an unrelated tile far above
 // the pilot, which must never teleport the player or the chase camera.
@@ -149,14 +171,33 @@ const REMOTE_SURFACE_MS = 250; // AGL sampling under a remote track we're watchi
 const LABEL_HEIGHT = 14; // m above the boots for a pilot's name tag
 
 const JARVIS_LINES = {
-  online: 'Suit online. Homewood airspace is clear, sir.',
+  // World-flavoured lines (airspace names, perimeter) come from the registry.
+  online: WORLD.jarvis.online,
+  perimeter: WORLD.jarvis.perimeter,
   bump: [
     'Structural contact. The architecture is not the enemy, sir.',
     'That was a building. They rarely move.',
   ],
-  pilotJoined: (name) =>
-    `A second suit has entered Homewood airspace, sir. ${name} is airborne — press V to take their view.`,
+  pilotJoined: WORLD.jarvis.pilotJoined,
   pilotLeft: (name) => `${name}'s suit has gone quiet, sir.`,
+  // Environmental layer. Every figure is read off the dataset, none invented.
+  envLoaded: ({ count, label, satellites, live, fallbackReason }) => {
+    const sensor = satellites.length ? ` from ${satellites.join(' and ')}` : '';
+    const when = live ? 'in the current window' : `in the ${label.toLowerCase()} dataset`;
+    const note = fallbackReason ? ` Live feed unavailable, sir: ${fallbackReason}.` : '';
+    return `Environmental layer online. ${count} active-fire detections${sensor} ${when}.${note}`;
+  },
+  envFailed: (reason) => `Environmental layer unavailable: ${reason}. Flight systems unaffected, sir.`,
+  // Selection briefings come from environmental/briefing.js (deterministic,
+  // evidence-only), not from this table.
+  missionRecommended: (n, level, distance) =>
+    `Recommendation: inspect observation #${n}, ${level.toLowerCase()} priority, ${distance} out. Your call, sir.`,
+  missionAccepted: (n, distance, dir) =>
+    `Inspection mission active. Observation #${n} is ${distance} to the ${dir}. Manual flight, sir.`,
+  missionIgnored: 'Understood. Recommendation withdrawn.',
+  missionAborted: 'Inspection mission aborted. Waypoint cleared.',
+  missionComplete: (n) =>
+    `Inspection point reached. You are over observation #${n}. What the satellite saw is below you, sir.`,
   povLost: (name) => `Lost ${name}'s feed. Back on your suit, sir.`,
   missileAway: ['Missile away.', 'Fox three, sir.', 'Missile tracking. Do try to look impressed.'],
   rackEmpty: 'Missile rack is empty, sir. Reloading — ten seconds a round.',
@@ -206,12 +247,43 @@ function flightState({ longitude, latitude, altitude, heading }) {
   };
 }
 
+// Where the suit (re)spawns. Worlds that place their spawn a height above the
+// ground get the altitude resolved against real terrain once at boot
+// (resolveSpawn); JHU's absolute spawn is used as configured.
+let spawnPoint = { ...WORLD.spawn };
+
 function spawnState() {
   return {
-    ...flightState({ ...JHU_HOMEWOOD, heading: 0 }),
+    ...flightState(spawnPoint),
     health: 100,
     mode: isGloveConnected() ? 'GLOVE' : 'KEYBOARD',
   };
+}
+
+const TERRAIN_SAMPLE_TIMEOUT_MS = 8000;
+
+// An 'agl' spawn with its altitude made absolute: terrain height under the
+// spawn plus the configured clearance. Terrain is a network fetch, so a slow
+// or failed sample falls back to the world's configured absolute altitude
+// rather than holding up boot or starting the suit inside a ridge.
+async function resolveSpawn(viewer, spawn) {
+  try {
+    const sample = Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [
+      Cesium.Cartographic.fromDegrees(spawn.longitude, spawn.latitude),
+    ]);
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('terrain sample timed out')), TERRAIN_SAMPLE_TIMEOUT_MS),
+    );
+    const [carto] = await Promise.race([sample, timeout]);
+    if (Number.isFinite(carto?.height)) {
+      console.log(`[world] terrain at spawn ${carto.height.toFixed(0)} m — spawning ${spawn.altitude} m above it`);
+      return { ...spawn, altitude: carto.height + spawn.altitude };
+    }
+  } catch (err) {
+    console.warn('[world] terrain sample at spawn failed:', err?.message ?? err);
+  }
+  console.warn(`[world] using fallback spawn altitude ${spawn.fallbackAltitude} m`);
+  return { ...spawn, altitude: spawn.fallbackAltitude };
 }
 
 let suit = spawnState();
@@ -230,6 +302,255 @@ const localSensors = sensorState();
 // Scene objects the sensors must see through (trails, name tags), so one
 // pilot's afterburner trail never reads as a wall to another.
 const sensorExclude = [];
+
+// ---- Environmental layer (worlds with environmentalLayers: ['firms']) ----
+// source → normalized observation → encoding → Cesium markers → HUD status.
+// Fail-soft by design: any failure ends in the ENV DATA readout and a JARVIS
+// line, never in a broken boot.
+//
+// Selection: click a marker → nearby_context from the suit → OBSERVATION
+// PRIORITY → evidence panel + deterministic JARVIS briefing. The briefing
+// input is the { observation, nearby_context, mission_state } envelope a
+// future agent would receive.
+//
+// Mission (human-in-the-loop): the system may RECOMMEND the top-priority
+// observation in range; the operator ACCEPTs or IGNOREs it, or starts one
+// from the evidence panel (INSPECT HOTSPOT). An ACTIVE mission is a beacon
+// plus distance/turn guidance — the pilot flies there by hand, and the
+// flight model is untouched. State is local to this browser (mission.js
+// documents the SpacetimeDB extension point).
+let wildfire = null; // { layer, dataset, panel, mission, marker }
+const MISSION_HUD_MS = 100; // guidance readout refresh (the 3D label is per-frame)
+const RECOMMEND_DELAY_MS = 6000; // after the layer loads, before the first proposal
+let missionHudAt = 0;
+
+function nearbyContext(obs) {
+  const here = { latitude: suit.latitude, longitude: suit.longitude };
+  return { distanceM: groundDistance(here, obs), bearingDeg: bearingTo(here, obs), suitHeadingDeg: suit.heading };
+}
+
+// 1-based position in the loaded dataset: the "#42" the operator sees.
+function observationNumber(obs) {
+  const i = wildfire?.dataset.observations.indexOf(obs) ?? -1;
+  return i >= 0 ? i + 1 : '?';
+}
+
+function selectObservation(obs, entity) {
+  if (!wildfire) return;
+  const { layer, dataset, panel, mission } = wildfire;
+  const now = Date.now();
+  const context = nearbyContext(obs);
+  const { text, priority } = briefObservation(
+    { observation: obs, nearby_context: context, mission_state: mission.missionState },
+    now,
+  );
+  layer.select(entity ?? layer.entityFor(obs));
+  panel.show(obs, { priority, dataset, context, now });
+  const isTarget = mission.observation?.id === obs.id;
+  let actions;
+  if (isTarget && mission.status === MISSION_STATUS.ACTIVE) {
+    actions = [{ label: 'TARGET · ABORT', onClick: () => abortMission() }];
+  } else if (isTarget && mission.status === MISSION_STATUS.COMPLETE) {
+    actions = [{ label: 'INSPECTED · CLEAR', onClick: () => clearMission() }];
+  } else {
+    actions = [{ label: 'INSPECT HOTSPOT', className: 'live', onClick: () => startMission(obs, priority) }];
+  }
+  panel.setActions(actions);
+  setJarvis(text);
+}
+
+function turnText(turnDeg) {
+  if (!Number.isFinite(turnDeg)) return { text: '—', onCourse: false };
+  const a = Math.abs(Math.round(turnDeg));
+  if (a <= 5) return { text: 'ON COURSE', onCourse: true };
+  return { text: `${turnDeg < 0 ? '◄' : '►'} ${a}° ${turnDeg < 0 ? 'LEFT' : 'RIGHT'}`, onCourse: false };
+}
+
+function renderMission(guidance) {
+  const { mission } = wildfire;
+  const snap = mission.snapshot();
+  if (snap.status === MISSION_STATUS.NONE || snap.status === MISSION_STATUS.RECOMMENDED || !snap.observation) {
+    setMission(null);
+    return;
+  }
+  const turn = guidance ? turnText(guidance.turnDeg) : { text: '—', onCourse: false };
+  setMission({
+    status: snap.status,
+    title: snap.title,
+    distance: guidance ? formatDistance(guidance.distanceM) : '—',
+    turn: snap.status === MISSION_STATUS.COMPLETE ? 'ARRIVED' : turn.text,
+    onCourse: turn.onCourse,
+    source: snap.observation.source ?? 'N/A',
+    target: `#${observationNumber(snap.observation)} · ${snap.priority?.level ?? '—'} priority`,
+  });
+}
+
+function placeMissionMarker(obs, complete) {
+  const { layer, marker, mission } = wildfire;
+  const entity = layer.entityFor(obs);
+  const position =
+    entity?.position?.getValue(Cesium.JulianDate.now()) ?? Cesium.Cartesian3.fromDegrees(obs.longitude, obs.latitude, 0);
+  // Label is read during render, so it must not drive state: plain distance,
+  // never mission.progress().
+  marker.set(position, {
+    complete,
+    getLabel: () =>
+      `${mission.status === MISSION_STATUS.COMPLETE ? 'INSPECTED' : 'INSPECT'} · ${formatDistance(
+        groundDistance({ latitude: suit.latitude, longitude: suit.longitude }, obs),
+      )}`,
+  });
+}
+
+function startMission(obs, priority) {
+  const { mission } = wildfire;
+  if (!mission.accept(obs, priority)) return;
+  setRecommendation(null);
+  placeMissionMarker(obs, false);
+  const g = mission.progress({ latitude: suit.latitude, longitude: suit.longitude, heading: suit.heading });
+  renderMission(g);
+  setJarvis(JARVIS_LINES.missionAccepted(observationNumber(obs), formatDistance(g.distanceM), compassPoint(g.bearingDeg)));
+  if (wildfire.panel.current?.observation?.id === obs.id) selectObservation(obs);
+}
+
+function abortMission() {
+  const { mission, marker, panel } = wildfire;
+  if (!mission.abort()) return;
+  marker.clear();
+  renderMission(null);
+  setJarvis(JARVIS_LINES.missionAborted);
+  if (panel.current) selectObservation(panel.current.observation);
+}
+
+function clearMission() {
+  const { mission, marker, panel } = wildfire;
+  if (!mission.clear()) return;
+  marker.clear();
+  renderMission(null);
+  if (panel.current) selectObservation(panel.current.observation);
+}
+
+// Offer the best observation in range. Only a proposal: nothing moves until ACCEPT.
+function recommendMission() {
+  const { mission, dataset } = wildfire;
+  if (mission.status === MISSION_STATUS.ACTIVE) return;
+  const rec = recommend(dataset.observations, { latitude: suit.latitude, longitude: suit.longitude }, { ignored: mission.ignored });
+  if (!rec || !mission.propose(rec.observation, rec.priority)) {
+    setRecommendation(null);
+    return;
+  }
+  const n = observationNumber(rec.observation);
+  const distance = formatDistance(rec.distanceM);
+  setRecommendation({
+    text: `Inspect observation #${n} — ${rec.priority.level} priority, ${distance}`,
+    why: rec.priority.reasons.length ? `Why: ${rec.priority.reasons.join(' · ')}` : '',
+  });
+  setJarvis(JARVIS_LINES.missionRecommended(n, rec.priority.level, distance));
+}
+
+function acceptRecommendation() {
+  const { mission } = wildfire;
+  if (mission.status !== MISSION_STATUS.RECOMMENDED) return;
+  const obs = mission.observation;
+  startMission(obs, mission.snapshot().priority);
+  selectObservation(obs);
+}
+
+function ignoreRecommendation() {
+  const { mission } = wildfire;
+  if (!mission.ignore()) return;
+  setRecommendation(null);
+  setJarvis(JARVIS_LINES.missionIgnored);
+}
+
+// Per frame from the render loop: guidance readout, arrival detection.
+function updateMission(nowMs) {
+  if (!wildfire?.mission) return;
+  const { mission, marker } = wildfire;
+  if (mission.status !== MISSION_STATUS.ACTIVE) return;
+  const g = mission.progress({ latitude: suit.latitude, longitude: suit.longitude, heading: suit.heading });
+  if (g?.arrived) {
+    marker.setComplete(true);
+    renderMission(g);
+    setJarvis(JARVIS_LINES.missionComplete(observationNumber(mission.observation)));
+    if (wildfire.panel.current?.observation?.id === mission.observation.id) selectObservation(mission.observation);
+    return;
+  }
+  if (nowMs - missionHudAt >= MISSION_HUD_MS) {
+    missionHudAt = nowMs;
+    renderMission(g);
+  }
+}
+
+function envDate(iso) {
+  return iso ? iso.slice(0, 10) : '?';
+}
+
+function envStatusFor(dataset) {
+  const { summary, provenance } = dataset;
+  const live = dataset.kind === DATASET_KIND.LIVE;
+  const sensor = [provenance.instrument, ...summary.satellites].filter(Boolean).join(' · ');
+  const from = envDate(summary.from);
+  const to = envDate(summary.to);
+  return {
+    badge: dataset.label,
+    tone: live ? 'live' : 'historical',
+    title: dataset.fallbackReason
+      ? `Live FIRMS unavailable (${dataset.fallbackReason}); showing bundled historical data`
+      : [provenance.source, provenance.product, provenance.credit].filter(Boolean).join(' · '),
+    source: `${summary.count} detections · ${provenance.source}${sensor ? ` · ${sensor}` : ''}`,
+    range: from === to ? `${from} UTC` : `${from} → ${to} UTC`,
+  };
+}
+
+async function initWildfireLayer(viewer) {
+  setEnvData({ badge: 'LOADING', tone: 'loading', source: 'NASA FIRMS active fire', range: '' });
+  const layer = createWildfireLayer(viewer, { onSelect: selectObservation });
+  const panel = createEvidencePanel({ onClose: () => layer.clearSelection() });
+  const mission = createMissionState();
+  const marker = createMissionMarker(viewer);
+  sensorExclude.push(...marker.entities);
+  onMissionAction({
+    accept: acceptRecommendation,
+    ignore: ignoreRecommendation,
+    abort: abortMission,
+    clear: clearMission,
+  });
+  try {
+    const dataset = await loadFirmsObservations(WORLD);
+    const { grounded } = await layer.load(dataset);
+    // Markers sit above terrain, but the collision sensors must not read
+    // them as ground or as a wall.
+    sensorExclude.push(...layer.entities);
+    wildfire = { layer, dataset, panel, mission, marker };
+    setEnvData(envStatusFor(dataset));
+    setJarvis(
+      JARVIS_LINES.envLoaded({
+        count: dataset.summary.count,
+        label: dataset.label,
+        satellites: dataset.summary.satellites,
+        live: dataset.kind === DATASET_KIND.LIVE,
+        fallbackReason: dataset.fallbackReason,
+      }),
+    );
+    console.log(
+      `[wildfire] ${dataset.label}: ${dataset.summary.count} detections, ${grounded} on terrain, ` +
+        `${envDate(dataset.summary.from)} → ${envDate(dataset.summary.to)}`,
+    );
+    // Let the layer status line land before proposing anything.
+    setTimeout(() => {
+      if (wildfire) recommendMission();
+    }, RECOMMEND_DELAY_MS);
+  } catch (err) {
+    const reason = err?.message ?? String(err);
+    console.error('[wildfire] layer failed:', err);
+    layer.destroy();
+    marker.destroy();
+    panel.hide();
+    setEnvData({ badge: 'UNAVAILABLE', tone: 'error', title: reason, source: 'NASA FIRMS active fire', range: reason });
+    setJarvis(JARVIS_LINES.envFailed(reason));
+  }
+  if (import.meta.env.DEV) window.__wildfire = wildfire;
+}
 
 let trailClearNeeded = false; // flush the afterburner trail after a teleport
 let idle = false; // suit is still enough to levitate
@@ -395,7 +716,7 @@ function stepFlight(dt) {
 
   if (flySuit(suit, input, dt) && performance.now() >= boundaryWarnUntil) {
     boundaryWarnUntil = performance.now() + BOUNDARY_WARN_COOLDOWN_MS;
-    setJarvis('Homewood perimeter engaged. Keeping you inside campus airspace, sir.');
+    setJarvis(JARVIS_LINES.perimeter);
   }
 
   let bankTarget = 0;
@@ -839,6 +1160,17 @@ function cyclePov() {
 
 async function boot() {
   initHUD();
+  setWorld(WORLD);
+  setJarvis(JARVIS_LINES.online);
+  // World switch = controlled reload into ?world=<id>. Nothing here is torn
+  // down in place (Cesium scene, Three overlay, SpacetimeDB link all restart
+  // clean), which is what keeps repeated switches from leaking entities.
+  populateWorldSelect(WORLDS, WORLD.id);
+  onWorldSelect((id) => {
+    if (id === WORLD.id) return;
+    window.location.assign(window.location.pathname + withWorldParam(id) + window.location.hash);
+  });
+  if (import.meta.env.DEV) window.__world = WORLD;
   initAttitude();
   initKeyboard();
 
@@ -892,7 +1224,17 @@ async function boot() {
     'GPU';
   setGfx(`${quality.label} · ${gpuShort}`, quality.gpu);
 
-  homewoodBoundary = initHomewoodBoundary(viewer);
+  // A spawn given as height above ground is pinned to the terrain now that the
+  // terrain provider exists. JHU (absolute spawn) skips this entirely.
+  if (spawnPoint.altitudeMode === 'agl') {
+    spawnPoint = await resolveSpawn(viewer, WORLD.spawn);
+    suit = spawnState();
+    localSensors.surface = undefined;
+  }
+
+  // The campus perimeter is a JHU feature; open worlds fly without one (the
+  // flight model and wingman spawn already treat a missing boundary as open).
+  if (WORLD.boundary === 'homewood') homewoodBoundary = initHomewoodBoundary(viewer);
   const overlay = initSuitOverlay(viewer, '/iron_man_ucm.glb');
   const suit3d = overlay.createSuit({ name: PLAYER_ID });
   const tracker = createTracker(overlay);
@@ -905,6 +1247,10 @@ async function boot() {
   const localTag = makeNameTag(viewer, displayName(PLAYER_ID), '#37e7ff', () => localView);
   localTag.show = false;
   sensorExclude.push(trail.entity, localTag);
+
+  // Environmental layers load alongside the multiplayer connect: they never
+  // block boot, and a failure only shows in the ENV DATA readout.
+  if (WORLD.environmentalLayers?.includes('firms')) initWildfireLayer(viewer);
 
   // Camera POV switch: V, or the HUD button that appears once another pilot
   // is airborne.
@@ -1146,6 +1492,9 @@ async function boot() {
       );
     }
     updateSpeedFx(speedRatio);
+
+    // Inspection mission guidance (wildfire worlds only; no-op otherwise).
+    updateMission(now);
 
     // Afterburner trail: extend it while flying, let it drain when parked.
     // It streams from the boot jets, wherever the posed legs put them.
