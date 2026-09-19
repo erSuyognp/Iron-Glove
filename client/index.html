@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>IRON GLOVE — Homewood</title>
+  <title>IRON GLOVE</title>
   <link rel="stylesheet" href="/src/hud/hud.css" />
+  <link rel="stylesheet" href="/src/landing/landing.css" />
 </head>
 <body>
   <!-- CesiumJS renders here -->
@@ -23,7 +24,7 @@
     <div class="hud-top">
       <div class="hud-title">
         <span class="hud-title-main">IRON GLOVE</span>
-        <span class="hud-title-sub">HOMEWOOD</span>
+        <span id="hud-site" class="hud-title-sub">…</span>
       </div>
       <div class="hud-suit">
         <span class="hud-suit-label">SUIT</span>
@@ -59,6 +60,13 @@
       <div class="hud-actions">
         <button type="button" id="btn-pov" class="hud-btn pov" hidden>POV</button>
       </div>
+      <!-- Drones only exist while a mission is active -->
+      <div class="hud-actions">
+        <button type="button" id="btn-mission" class="hud-btn mission" disabled>ACTIVATE MISSION <span class="key">M</span></button>
+      </div>
+      <div class="hud-actions">
+        <button type="button" id="btn-change-site" class="hud-btn quiet">◂ CHANGE LOCATION</button>
+      </div>
     </div>
 
     <!-- Heading tape (scrolls with heading) -->
@@ -92,7 +100,7 @@
     <!-- JARVIS ticker (wired for Phase 4, static for now) -->
     <div class="hud-jarvis">
       <span class="jarvis-label">JARVIS</span>
-      <span id="jarvis-ticker" class="jarvis-line">Suit online. Homewood airspace is clear, sir.</span>
+      <span id="jarvis-ticker" class="jarvis-line">Awaiting destination, sir.</span>
     </div>
 
     <!-- Bottom help bar -->
@@ -104,9 +112,59 @@
       <span class="key">Q</span>/<span class="key">E</span> roll
       <span class="key">Shift</span> boost
       <span class="key">Space</span> boost · fire when locked
+      <span class="key">M</span> mission
       <span class="key">R</span> reset
     </div>
   </div>
+
+  <!-- Boot and destination overlays stay above the mounted game canvas. -->
+  <section id="boot" class="boot-screen" role="dialog" aria-modal="true" aria-labelledby="boot-wordmark">
+    <header class="landing-bar" aria-hidden="true">
+      <span class="landing-mark">IRON GLOVE <i>//</i> MARK VII</span>
+      <span class="landing-status"><i></i>FLIGHT SYSTEMS ONLINE</span>
+    </header>
+    <div class="boot-core">
+      <div class="reactor" aria-hidden="true">
+        <span class="reactor-ring reactor-ring-outer"></span>
+        <span class="reactor-ring reactor-ring-cells"></span>
+        <span class="reactor-ring reactor-ring-inner"></span>
+        <span class="reactor-heart"></span>
+      </div>
+      <p class="boot-eyebrow">GLOVE · KEYBOARD · PHONE</p>
+      <h1 class="boot-wordmark" id="boot-wordmark">IRON GLOVE</h1>
+      <p class="boot-tagline">Suit up and fly photoreal 3D airspace over America&rsquo;s landmarks.</p>
+      <button type="button" id="btnStart">START FLIGHT <span aria-hidden="true">→</span></button>
+    </div>
+    <footer class="boot-foot" aria-hidden="true">
+      <span class="boot-foot-label">AIRSPACE</span>
+      <ul id="boot-sites"></ul>
+    </footer>
+  </section>
+
+  <section id="dest" class="destination-screen" role="dialog" aria-modal="true" aria-labelledby="dest-title" hidden>
+    <div id="dest-preview" class="destination-preview" data-site="jhu">
+      <div id="dest-art" class="destination-art" aria-hidden="true"></div>
+    </div>
+    <header class="landing-bar" aria-hidden="true">
+      <span class="landing-mark">IRON GLOVE <i>//</i> MARK VII</span>
+      <span class="landing-status"><i></i>SELECT DESTINATION</span>
+    </header>
+    <div class="destination-copy">
+      <span id="dest-index" class="destination-kicker">DESTINATION 01 / 07</span>
+      <h1 id="dest-title">JOHNS HOPKINS UNIVERSITY</h1>
+      <p id="dest-place" class="destination-place">BALTIMORE, MARYLAND · USA</p>
+      <p id="dest-blurb" class="destination-blurb"></p>
+      <div class="destination-meta">
+        <span id="dest-era"></span>
+        <span id="dest-coords"></span>
+      </div>
+      <button type="button" id="dest-launch">DEPLOY <span aria-hidden="true">→</span></button>
+    </div>
+    <div class="destination-film-area">
+      <p class="destination-instruction"><span>← →</span> SELECT · <span>ENTER</span> DEPLOY</p>
+      <div id="dest-filmstrip" class="destination-filmstrip" aria-label="Flight destinations"></div>
+    </div>
+  </section>
 
   <script type="module" src="/src/main.js"></script>
 </body>

@@ -34,8 +34,10 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
+import ActivateMissionReducer from "./activate_mission_reducer";
 import ApplyDamageReducer from "./apply_damage_reducer";
 import DestroySentinelReducer from "./destroy_sentinel_reducer";
+import EndMissionReducer from "./end_mission_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import ReportPositionReducer from "./report_position_reducer";
 import UpdateOrientationReducer from "./update_orientation_reducer";
@@ -100,8 +102,10 @@ const tablesSchema = __schema({
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
+  __reducerSchema("activate_mission", ActivateMissionReducer),
   __reducerSchema("apply_damage", ApplyDamageReducer),
   __reducerSchema("destroy_sentinel", DestroySentinelReducer),
+  __reducerSchema("end_mission", EndMissionReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("report_position", ReportPositionReducer),
   __reducerSchema("update_orientation", UpdateOrientationReducer),

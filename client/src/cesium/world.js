@@ -1,16 +1,10 @@
 import * as Cesium from 'cesium';
+import { site } from '../sites.js';
 
 const CESIUM_TOKEN = import.meta.env.VITE_CESIUM_TOKEN;
 // Optional: a direct Google Maps Platform key. Not required — the tiles are the
 // same either way — but supported in case you prefer Google billing over Ion.
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-
-// JHU Homewood campus center (Keyser Quad) — the spawn point.
-export const JHU_HOMEWOOD = {
-  longitude: -76.6205,
-  latitude: 39.3299,
-  altitude: 150, // meters above ground
-};
 
 export function hasValidToken() {
   return (
@@ -32,9 +26,11 @@ const QUALITY = {
   ultra: { label: 'ULTRA', sse: 6, foveated: false, msaa: 4, fullRes: true, supersample: 1.5, hdr: true, cacheMB: 4096 },
 };
 
-// Late afternoon over Baltimore (21:00 UTC = 5 pm EDT): a warm sun low in the
-// west, long enough light to read the campus, with real sky and haze colour.
-const SUN_UTC_HOUR = 21;
+// Late afternoon wherever the pilot flies: a warm sun low in the west, long
+// enough light to read the ground, with real sky and haze colour. It is kept
+// in local solar time so every site gets the same light — over Baltimore this
+// is 21:00 UTC (5 pm EDT), as it always was.
+const SUN_SOLAR_HOUR = 15.9;
 
 let renderQuality = { tier: 'lean', ...QUALITY.lean, gpu: '' };
 
@@ -165,8 +161,9 @@ export async function initWorld() {
   // Real sunlight at a fixed late-afternoon time. The sun drives the sky, the
   // aerial haze on distant tiles, and the suit's key light (player.js).
   const now = new Date();
+  const sunUtcMinutes = Math.round((SUN_SOLAR_HOUR - site.longitude / 15) * 60);
   viewer.clock.currentTime = Cesium.JulianDate.fromDate(
-    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), SUN_UTC_HOUR)),
+    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, sunUtcMinutes)),
   );
   viewer.clock.shouldAnimate = false;
   scene.light = new Cesium.SunLight();

@@ -13,6 +13,8 @@
 //   * The sentinel drones are the exception: they have no client, so
 //     tick_sentinels flies them here every 100 ms and clients interpolate
 //     between ticks (see the drone section at the bottom of this file).
+//     There are no drones until a pilot calls activate_mission, which also
+//     says where in the world the fight is.
 //
 // Tables and reducers keep the exact names/fields from the plan. The one
 // deviation from the plan's `update_orientation(pitch, roll, yaw, mode)`
@@ -131,6 +133,23 @@ const sentinelRespawn = table(
   }
 );
 
+// The mission in progress (private; at most one row, id 0). Drones only exist
+// while it is active. It records where the pilots are flying — the client lets
+// them pick a site anywhere in the world — as the origin of the drones' local
+// frame and the airspace they must stay inside.
+const mission = table(
+  { name: "mission" },
+  {
+    mission_id: t.u32().primaryKey(),
+    site: t.string(), //      "jhu" keeps the Homewood polygon; anything else is a circle
+    center_lon: t.f64(),
+    center_lat: t.f64(),
+    alt_offset: t.f64(), //   metres added to every drone altitude (0 at Homewood)
+    radius_m: t.f64(), //     airspace radius for circular sites
+    started_at: t.timestamp(),
+  }
+);
+
 // Schedule row that drives tick_sentinels (private).
 const sentinelTick = table(
   { name: "sentinel_tick" },
@@ -149,6 +168,7 @@ const spacetimedb = schema({
   pilotPosition,
   sentinelRespawn,
   sentinelTick,
+  mission,
 });
 export default spacetimedb;
 
@@ -176,7 +196,7 @@ export const join_game = spacetimedb.reducer(
     } else {
       ctx.db.playerState.insert(row);
     }
-    ensureSentinels(ctx);
+    ensureTick(ctx);
   }
 );
 
@@ -209,7 +229,7 @@ export const update_orientation = spacetimedb.reducer(
       updated_at: ctx.timestamp,
     });
     // The drone tick parks itself when nobody is flying; a pilot wakes it.
-    ensureSentinels(ctx);
+    ensureTick(ctx);
   }
 );
 
@@ -269,12 +289,46 @@ export const destroy_sentinel = spacetimedb.reducer(
   }
 );
 
+// activate_mission — "ACTIVATE MISSION" on the HUD. Launches a fresh fleet
+// around the site the pilot is flying at; calling it again restarts the fight
+// there. `alt_offset` lifts every drone altitude (tuned for Homewood) to the
+// site's own ground level, `radius_m` bounds the airspace of any site but
+// "jhu", which keeps its campus polygon.
+export const activate_mission = spacetimedb.reducer(
+  { site: t.string(), center_lon: t.f64(), center_lat: t.f64(), alt_offset: t.f64(), radius_m: t.f64() },
+  (ctx, p) => {
+    if (!Number.isFinite(p.center_lon) || !Number.isFinite(p.center_lat) || !Number.isFinite(p.alt_offset)) return;
+    clearFleet(ctx);
+    const row = {
+      mission_id: 0,
+      site: p.site,
+      center_lon: p.center_lon,
+      center_lat: Math.max(-85, Math.min(85, p.center_lat)),
+      alt_offset: p.alt_offset,
+      radius_m: Math.max(MIN_RADIUS_M, Math.min(MAX_RADIUS_M, p.radius_m || 0)),
+      started_at: ctx.timestamp,
+    };
+    ctx.db.mission.insert(row);
+    const area = areaOf(row);
+    FLEET.forEach((slot, id) => spawnSentinel(ctx, area, id, slot.drone_type, slot.waypoint));
+    ensureTick(ctx);
+    logEvent(ctx, "MISSION", "", `activated at ${p.site}`);
+  }
+);
+
+// end_mission — stand the drones down. The flying client also calls this when
+// it connects, so every session starts with a clear sky.
+export const end_mission = spacetimedb.reducer({}, (ctx) => {
+  clearFleet(ctx);
+});
+
 // ---------------------------------------------------------------------------
 // Sentinel drones
 //
-// All drone maths runs in a flat local frame in metres around the quad
-// (east, north, up) — the same 111 320 m/deg approximation the client flies
-// with — and is converted back to lon/lat for storage.
+// All drone maths runs in a flat local frame in metres around the mission's
+// centre (east, north, up) — the same 111 320 m/deg approximation the client
+// flies with, around the same point — and is converted back to lon/lat for
+// storage.
 // ---------------------------------------------------------------------------
 
 const PLAYER_MAX_SPEED = 60; // m/s — keep in step with MAX_SPEED in client/src/main.js
@@ -304,13 +358,17 @@ const PLAYER_LIVE_S = 3; // a pilot row older than this is not flying
 const IDLE_PARK_S = 60; // stop ticking after this long without a pilot
 const TICK_MICROS = 100_000n;
 
+// Altitudes here are Homewood's; a mission's alt_offset moves them to its site.
 const MIN_ALT = 70; // clear of the rooftops: the server cannot see buildings
 const MAX_ALT = 380;
+const MIN_RADIUS_M = 300;
+const MAX_RADIUS_M = 5000;
+const RING_WAYPOINT_SHARE = 0.45; // patrol ring of a circular site, as a share of its radius
+const RING_EDGE_SHARE = 0.97; // the client's perimeter is a polygon inscribed in the circle
 const WAYPOINT_REACHED_M = 15;
 const LOOKAHEAD_M = 80; // perimeter avoidance probe
 
 const M_PER_LAT = 111320;
-const M_PER_LON = 111320 * Math.cos((SPAWN_Z * Math.PI) / 180);
 
 // Sentinel patrol waypoints from the project plan.
 const WAYPOINTS = [
@@ -340,23 +398,73 @@ const HOMEWOOD = [
   [-76.6191, 39.3249],
   [-76.6254, 39.3255],
   [-76.6284, 39.3292],
-].map(([lon, lat]) => [(lon - SPAWN_X) * M_PER_LON, (lat - SPAWN_Z) * M_PER_LAT]);
+];
 
 type Vec = { e: number; n: number; u: number };
 type Pilot = { id: string; pos: Vec; heading: number }; // heading in radians, 0 = north
 
-function insideHomewood(e: number, n: number): boolean {
+// A mission's airspace: the local frame around its centre, the perimeter and
+// the patrol route, all in that frame's metres.
+type Area = {
+  lon: number;
+  lat: number;
+  mPerLon: number;
+  minAlt: number;
+  maxAlt: number;
+  polygon: number[][] | null; // [east, north] corners, or null for a circle
+  radius: number;
+  waypoints: Vec[];
+};
+
+function areaOf(m: {
+  site: string;
+  center_lon: number;
+  center_lat: number;
+  alt_offset: number;
+  radius_m: number;
+}): Area {
+  const mPerLon = M_PER_LAT * Math.cos((m.center_lat * Math.PI) / 180);
+  const local = (lon: number, lat: number, alt: number): Vec => ({
+    e: (lon - m.center_lon) * mPerLon,
+    n: (lat - m.center_lat) * M_PER_LAT,
+    u: alt + m.alt_offset,
+  });
+  const campus = m.site === "jhu";
+  return {
+    lon: m.center_lon,
+    lat: m.center_lat,
+    mPerLon,
+    minAlt: MIN_ALT + m.alt_offset,
+    maxAlt: MAX_ALT + m.alt_offset,
+    polygon: campus
+      ? HOMEWOOD.map(([lon, lat]) => [(lon - m.center_lon) * mPerLon, (lat - m.center_lat) * M_PER_LAT])
+      : null,
+    radius: m.radius_m * RING_EDGE_SHARE,
+    waypoints: campus
+      ? WAYPOINTS.map((w) => local(w.lon, w.lat, w.alt))
+      : // The same five heights, on a ring round the landmark.
+        WAYPOINTS.map((w, i) => {
+          const a = (i / WAYPOINTS.length) * 2 * Math.PI;
+          const r = m.radius_m * RING_WAYPOINT_SHARE;
+          return { e: Math.sin(a) * r, n: Math.cos(a) * r, u: w.alt + m.alt_offset };
+        }),
+  };
+}
+
+function insideArea(area: Area, e: number, n: number): boolean {
+  if (!area.polygon) return Math.hypot(e, n) < area.radius;
   let inside = false;
-  for (let i = 0, j = HOMEWOOD.length - 1; i < HOMEWOOD.length; j = i++) {
-    const [xi, yi] = HOMEWOOD[i];
-    const [xj, yj] = HOMEWOOD[j];
+  const poly = area.polygon;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
     if (yi > n !== yj > n && e < ((xj - xi) * (n - yi)) / (yj - yi) + xi) inside = !inside;
   }
   return inside;
 }
 
-function toLocal(lon: number, lat: number, alt: number): Vec {
-  return { e: (lon - SPAWN_X) * M_PER_LON, n: (lat - SPAWN_Z) * M_PER_LAT, u: alt };
+function toLocal(area: Area, lon: number, lat: number, alt: number): Vec {
+  return { e: (lon - area.lon) * area.mPerLon, n: (lat - area.lat) * M_PER_LAT, u: alt };
 }
 
 function sub(a: Vec, b: Vec): Vec {
@@ -385,57 +493,62 @@ function logEvent(ctx: any, event_type: string, player_id: string, detail: strin
   ctx.db.gameEvent.insert({ event_id: 0n, event_type, player_id, detail, timestamp: ctx.timestamp });
 }
 
-function spawnSentinel(ctx: any, sentinel_id: number, drone_type: string, waypoint: number) {
-  const w = WAYPOINTS[waypoint];
+function spawnSentinel(ctx: any, area: Area, sentinel_id: number, drone_type: string, waypoint: number) {
+  const w = area.waypoints[waypoint];
   ctx.db.sentinelState.insert({
     sentinel_id,
     drone_type,
     behavior: "PATROL",
-    position_x: w.lon,
-    position_y: w.alt,
-    position_z: w.lat,
+    position_x: area.lon + w.e / area.mPerLon,
+    position_y: w.u,
+    position_z: area.lat + w.n / M_PER_LAT,
     velocity_x: 0,
     velocity_y: 0,
     velocity_z: 0,
     health: 100.0,
     target_player_id: "",
-    patrol_index: (waypoint + 1) % WAYPOINTS.length,
+    patrol_index: (waypoint + 1) % area.waypoints.length,
     last_fired_at: ctx.timestamp,
     updated_at: ctx.timestamp,
   });
 }
 
-// Make sure the fleet exists and its tick is running. Cheap enough to call
-// from every player reducer; `init` only runs on a first publish, so this is
-// also what brings the drones up on a database that predates them.
-function ensureSentinels(ctx: any) {
+// Make sure the drone tick is running while a mission is on. Cheap enough to
+// call from every player reducer, which is how a pilot wakes a parked tick.
+function ensureTick(ctx: any) {
+  if (!ctx.db.mission.mission_id.find(0)) return;
   for (const _tick of ctx.db.sentinelTick.iter()) return;
   ctx.db.sentinelTick.insert({
     scheduled_id: 0n,
     scheduled_at: ScheduleAt.interval(TICK_MICROS),
     idle_since: ctx.timestamp,
   });
-  FLEET.forEach((slot, id) => {
-    if (ctx.db.sentinelState.sentinel_id.find(id)) return;
-    if (ctx.db.sentinelRespawn.sentinel_id.find(id)) return;
-    spawnSentinel(ctx, id, slot.drone_type, slot.waypoint);
-  });
+}
+
+// End the mission: every drone, pending respawn and missile goes, and the tick
+// with them.
+function clearFleet(ctx: any) {
+  for (const d of ctx.db.sentinelState.iter()) ctx.db.sentinelState.sentinel_id.delete(d.sentinel_id);
+  for (const r of ctx.db.sentinelRespawn.iter()) ctx.db.sentinelRespawn.sentinel_id.delete(r.sentinel_id);
+  for (const m of ctx.db.missile.iter()) ctx.db.missile.missile_id.delete(m.missile_id);
+  for (const tick of ctx.db.sentinelTick.iter()) ctx.db.sentinelTick.scheduled_id.delete(tick.scheduled_id);
+  ctx.db.mission.mission_id.delete(0);
 }
 
 // Swing a desired direction away from the perimeter: probe ahead and take the
 // nearest heading (alternating left/right) that stays over campus.
-function avoidPerimeter(pos: Vec, want: Vec): Vec {
+function avoidPerimeter(area: Area, pos: Vec, want: Vec): Vec {
   const flat = Math.hypot(want.e, want.n);
   if (flat < 1e-6) return want;
   for (const deg of [0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]) {
     const a = (deg * Math.PI) / 180;
     const e = want.e * Math.cos(a) - want.n * Math.sin(a);
     const n = want.e * Math.sin(a) + want.n * Math.cos(a);
-    if (insideHomewood(pos.e + (e / flat) * LOOKAHEAD_M, pos.n + (n / flat) * LOOKAHEAD_M)) {
+    if (insideArea(area, pos.e + (e / flat) * LOOKAHEAD_M, pos.n + (n / flat) * LOOKAHEAD_M)) {
       return { e, n, u: want.u };
     }
   }
-  return { e: -pos.e, n: -pos.n, u: want.u }; // boxed in: head for the quad
+  return { e: -pos.e, n: -pos.n, u: want.u }; // boxed in: head for the centre
 }
 
 // tick_sentinels — scheduled every 100 ms. Flies every drone one step,
@@ -445,6 +558,14 @@ export const tick_sentinels = spacetimedb.reducer(
   { tick: sentinelTick.rowType },
   (ctx, { tick }) => {
     const now = ctx.timestamp;
+
+    // No mission, no drones: a tick left over from one that ended retires.
+    const current = ctx.db.mission.mission_id.find(0);
+    if (!current) {
+      ctx.db.sentinelTick.scheduled_id.delete(tick.scheduled_id);
+      return;
+    }
+    const area = areaOf(current);
 
     // Pilots who are actually flying, in a stable order. Phones in PHONE_CTRL
     // send stick inputs, not positions; theirs comes from pilot_position.
@@ -456,24 +577,25 @@ export const tick_sentinels = spacetimedb.reducer(
         if (!at || secondsBetween(now, at.updated_at) > PLAYER_LIVE_S) continue;
         pilots.push({
           id: p.player_id,
-          pos: toLocal(at.position_x, at.position_z, at.position_y),
+          pos: toLocal(area, at.position_x, at.position_z, at.position_y),
           heading: (at.heading * Math.PI) / 180,
         });
       } else {
         pilots.push({
           id: p.player_id,
-          pos: toLocal(p.position_x, p.position_z, p.position_y),
+          pos: toLocal(area, p.position_x, p.position_z, p.position_y),
           heading: (p.yaw * Math.PI) / 180,
         });
       }
     }
     pilots.sort((a, b) => (a.id < b.id ? -1 : 1));
 
-    // Park the tick when the sky has been empty for a while.
+    // Stand the mission down when the sky has been empty for a while, so the
+    // next session starts clear.
     if (pilots.length > 0) {
       ctx.db.sentinelTick.scheduled_id.update({ ...tick, idle_since: now });
     } else if (secondsBetween(now, tick.idle_since) > IDLE_PARK_S) {
-      ctx.db.sentinelTick.scheduled_id.delete(tick.scheduled_id);
+      clearFleet(ctx);
       return;
     }
 
@@ -485,13 +607,13 @@ export const tick_sentinels = spacetimedb.reducer(
       if (secondsBetween(now, r.respawn_at) < 0) continue;
       ctx.db.sentinelRespawn.sentinel_id.delete(r.sentinel_id);
       if (!ctx.db.sentinelState.sentinel_id.find(r.sentinel_id)) {
-        spawnSentinel(ctx, r.sentinel_id, r.drone_type, ctx.random.integerInRange(0, WAYPOINTS.length - 1));
+        spawnSentinel(ctx, area, r.sentinel_id, r.drone_type, ctx.random.integerInRange(0, area.waypoints.length - 1));
       }
     }
 
     for (const d of ctx.db.sentinelState.iter()) {
       const dt = Math.min(0.3, Math.max(0.01, secondsBetween(now, d.updated_at)));
-      const pos = toLocal(d.position_x, d.position_z, d.position_y);
+      const pos = toLocal(area, d.position_x, d.position_z, d.position_y);
       let vel: Vec = { e: d.velocity_x, n: d.velocity_z, u: d.velocity_y };
 
       let nearest: Pilot | null = null;
@@ -569,23 +691,23 @@ export const tick_sentinels = spacetimedb.reducer(
         behavior = "FLEE";
         want = withLength(sub(pos, nearest.pos), FLEE_SPEED);
       } else {
-        let w = waypointLocal(patrol_index);
+        let w = area.waypoints[patrol_index % area.waypoints.length];
         if (len(sub(w, pos)) < WAYPOINT_REACHED_M) {
-          patrol_index = (patrol_index + 1) % WAYPOINTS.length;
-          w = waypointLocal(patrol_index);
+          patrol_index = (patrol_index + 1) % area.waypoints.length;
+          w = area.waypoints[patrol_index];
         }
         want = withLength(sub(w, pos), PATROL_SPEED);
       }
 
       const speed = len(want);
-      want = withLength(avoidPerimeter(pos, want), speed);
-      if ((pos.u <= MIN_ALT && want.u < 0) || (pos.u >= MAX_ALT && want.u > 0)) want.u = 0;
+      want = withLength(avoidPerimeter(area, pos, want), speed);
+      if ((pos.u <= area.minAlt && want.u < 0) || (pos.u >= area.maxAlt && want.u > 0)) want.u = 0;
 
       const k = Math.min(1, STEER_RATE * dt);
       vel = { e: vel.e + (want.e - vel.e) * k, n: vel.n + (want.n - vel.n) * k, u: vel.u + (want.u - vel.u) * k };
 
       let next: Vec = { e: pos.e + vel.e * dt, n: pos.n + vel.n * dt, u: pos.u + vel.u * dt };
-      if (!insideHomewood(next.e, next.n)) {
+      if (!insideArea(area, next.e, next.n)) {
         next = { e: pos.e, n: pos.n, u: next.u };
         vel = { e: 0, n: 0, u: vel.u };
       }
@@ -598,21 +720,21 @@ export const tick_sentinels = spacetimedb.reducer(
         if (gap >= COLLIDE_M) continue;
         const push = gap > 0.01 ? withLength(apart, 1) : { e: 0, n: 0, u: 1 };
         const overlap = COLLIDE_M - gap;
-        if (insideHomewood(next.e + push.e * overlap, next.n + push.n * overlap)) {
+        if (insideArea(area, next.e + push.e * overlap, next.n + push.n * overlap)) {
           next.e += push.e * overlap;
           next.n += push.n * overlap;
         }
         next.u += push.u * overlap;
         vel = { e: vel.e + push.e * 12, n: vel.n + push.n * 12, u: vel.u + push.u * 12 };
       }
-      next.u = Math.max(MIN_ALT, Math.min(MAX_ALT, next.u));
+      next.u = Math.max(area.minAlt, Math.min(area.maxAlt, next.u));
 
       ctx.db.sentinelState.sentinel_id.update({
         ...d,
         behavior,
-        position_x: SPAWN_X + next.e / M_PER_LON,
+        position_x: area.lon + next.e / area.mPerLon,
         position_y: next.u,
-        position_z: SPAWN_Z + next.n / M_PER_LAT,
+        position_z: area.lat + next.n / M_PER_LAT,
         velocity_x: vel.e,
         velocity_y: vel.u,
         velocity_z: vel.n,
@@ -624,8 +746,3 @@ export const tick_sentinels = spacetimedb.reducer(
     }
   }
 );
-
-function waypointLocal(index: number): Vec {
-  const w = WAYPOINTS[index];
-  return toLocal(w.lon, w.lat, w.alt);
-}

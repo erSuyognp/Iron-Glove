@@ -1,23 +1,20 @@
 import * as THREE from 'three';
 import * as Cesium from 'cesium';
-import { JHU_HOMEWOOD } from '../cesium/world.js';
+import { site } from '../sites.js';
 
 // ---------------------------------------------------------------------------
 // Combat space — drones, missiles and explosions live in one flat local frame
-// in metres around the quad: x = east, y = north, z = up (altitude). It is the
-// same 111 320 m/deg approximation the flight model and the server's drone
-// tick use, so a point here lands exactly where a suit at the same
-// lon/lat/alt is drawn.
+// in metres around the centre of the site being flown (sites.js): x = east,
+// y = north, z = up (altitude). It is the same 111 320 m/deg approximation the
+// flight model and the server's drone tick use, around the same point, so a
+// point here lands exactly where a suit at the same lon/lat/alt is drawn.
 // ---------------------------------------------------------------------------
-
-const M_PER_LAT = 111320;
-const M_PER_LON = 111320 * Math.cos(Cesium.Math.toRadians(JHU_HOMEWOOD.latitude));
 
 /** Geodetic position ({longitude, latitude, altitude}) -> local metres. */
 export function toLocal(geo, out = new THREE.Vector3(), lift = 0) {
   return out.set(
-    (geo.longitude - JHU_HOMEWOOD.longitude) * M_PER_LON,
-    (geo.latitude - JHU_HOMEWOOD.latitude) * M_PER_LAT,
+    (geo.longitude - site.longitude) * site.mPerLon,
+    (geo.latitude - site.latitude) * site.mPerLat,
     geo.altitude + lift,
   );
 }
@@ -25,8 +22,8 @@ export function toLocal(geo, out = new THREE.Vector3(), lift = 0) {
 /** Local metres -> ECEF. */
 export function localToEcef(v, result = new Cesium.Cartesian3()) {
   return Cesium.Cartesian3.fromDegrees(
-    JHU_HOMEWOOD.longitude + v.x / M_PER_LON,
-    JHU_HOMEWOOD.latitude + v.y / M_PER_LAT,
+    site.longitude + v.x / site.mPerLon,
+    site.latitude + v.y / site.mPerLat,
     v.z,
     Cesium.Ellipsoid.WGS84,
     result,
@@ -35,8 +32,8 @@ export function localToEcef(v, result = new Cesium.Cartesian3()) {
 
 /** Move a flight state (longitude/latitude/altitude) by a local offset in metres. */
 export function nudgeGeo(state, offset) {
-  state.longitude += offset.x / M_PER_LON;
-  state.latitude += offset.y / M_PER_LAT;
+  state.longitude += offset.x / site.mPerLon;
+  state.latitude += offset.y / site.mPerLat;
   state.altitude += offset.z;
 }
 
@@ -71,10 +68,10 @@ export function createWorldLayer(overlay, viewer) {
   const layer = new THREE.Group();
   const items = new Set();
 
-  // Rotation from local axes to ECEF. Campus is small enough that one frame
-  // at the quad serves every object.
+  // Rotation from local axes to ECEF. A site is small enough that one frame
+  // at its centre serves every object.
   const enu = Cesium.Transforms.eastNorthUpToFixedFrame(
-    Cesium.Cartesian3.fromDegrees(JHU_HOMEWOOD.longitude, JHU_HOMEWOOD.latitude, 0),
+    Cesium.Cartesian3.fromDegrees(site.longitude, site.latitude, 0),
   );
   const enuRotation = Cesium.Matrix4.getMatrix3(enu, new Cesium.Matrix3());
   const viewRotation = new Cesium.Matrix3();

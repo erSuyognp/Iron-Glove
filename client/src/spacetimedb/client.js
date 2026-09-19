@@ -8,7 +8,9 @@
 //   3. pushes the client-computed transform via update_orientation,
 //   4. hands every other pilot's row to the caller via a callback, and
 //   5. streams the server-flown sentinel drones and their missiles, and
-//      reports hits back (apply_damage / destroy_sentinel).
+//      reports hits back (apply_damage / destroy_sentinel), and
+//   6. starts and ends the drone mission (activate_mission / end_mission):
+//      there are no drones until the pilot asks for them.
 //
 // It fails soft: if the module is unreachable the game keeps running on local
 // physics and just reports an offline status.
@@ -92,6 +94,9 @@ export function createStdbClient({
           const onApplied = () => {
             if (subscribed) return;
             subscribed = true;
+            // Every session starts with a clear sky, whatever the last one
+            // left flying: drones wait for ACTIVATE MISSION.
+            c.reducers.endMission({}).catch(reducerFailed('end_mission'));
             // Insert (or reset) our row at the spawn point.
             c.reducers.joinGame({ playerId, mode }).catch(reducerFailed('join_game'));
             status('online');
@@ -188,8 +193,32 @@ export function createStdbClient({
       .catch(reducerFailed('report_position'));
   }
 
+  // Launch the drones around `site` (see sites.js); again to restart the fight.
+  // Returns false when there is no link to launch them over.
+  function activateMission(site) {
+    if (!conn || !subscribed) return false;
+    conn.reducers
+      .activateMission({
+        site: site.id,
+        centerLon: site.longitude,
+        centerLat: site.latitude,
+        altOffset: site.altOffset,
+        radiusM: site.radius ?? 0,
+      })
+      .catch(reducerFailed('activate_mission'));
+    return true;
+  }
+
+  function endMission() {
+    if (!conn || !subscribed) return false;
+    conn.reducers.endMission({}).catch(reducerFailed('end_mission'));
+    return true;
+  }
+
   return {
     start,
+    activateMission,
+    endMission,
     pushTransform,
     applyDamage,
     destroySentinel,

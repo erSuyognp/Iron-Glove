@@ -18,7 +18,7 @@ import { createSentinelFleet, DRONE_RADIUS } from '../sentinel/sentinel.js';
 
 const MAX_AMMO = 6;
 const RELOAD_SECONDS = 10; // one missile back per interval
-const MISSILE_DAMAGE = 20; // HP per enemy missile
+const MISSILE_DAMAGE = 6; // HP per enemy missile
 const SUIT_MID = 5.5; // m above the boots: mid-body, where hits and contact are judged
 const SUIT_RADIUS = 5;
 const CONTACT_M = SUIT_RADIUS + DRONE_RADIUS;

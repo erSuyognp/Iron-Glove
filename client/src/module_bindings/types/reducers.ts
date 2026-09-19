@@ -6,14 +6,18 @@
 import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
+import ActivateMissionReducer from "../activate_mission_reducer";
 import ApplyDamageReducer from "../apply_damage_reducer";
 import DestroySentinelReducer from "../destroy_sentinel_reducer";
+import EndMissionReducer from "../end_mission_reducer";
 import JoinGameReducer from "../join_game_reducer";
 import ReportPositionReducer from "../report_position_reducer";
 import UpdateOrientationReducer from "../update_orientation_reducer";
 
+export type ActivateMissionParams = __Infer<typeof ActivateMissionReducer>;
 export type ApplyDamageParams = __Infer<typeof ApplyDamageReducer>;
 export type DestroySentinelParams = __Infer<typeof DestroySentinelReducer>;
+export type EndMissionParams = __Infer<typeof EndMissionReducer>;
 export type JoinGameParams = __Infer<typeof JoinGameReducer>;
 export type ReportPositionParams = __Infer<typeof ReportPositionReducer>;
 export type UpdateOrientationParams = __Infer<typeof UpdateOrientationReducer>;

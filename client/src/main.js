@@ -1,7 +1,9 @@
 import * as Cesium from 'cesium';
-import { initWorld, hasValidToken, getRenderQuality, JHU_HOMEWOOD } from './cesium/world.js';
+import { initWorld, hasValidToken, getRenderQuality } from './cesium/world.js';
 import { updateChaseCamera } from './cesium/camera.js';
-import { initHomewoodBoundary } from './cesium/homewood-boundary.js';
+import { initBoundary } from './cesium/boundary.js';
+import { site, chooseSite, settleSite, findSite } from './sites.js';
+import { pickSite } from './landing/landing.js';
 import { initKeyboard, readAxes, setSpaceFires, consumeFireKey } from './input/keyboard.js';
 import {
   connectGlove,
@@ -31,6 +33,10 @@ import {
   setGfx,
   updateCombatHud,
   flashCombat,
+  setSiteName,
+  setMissionButton,
+  onMissionButton,
+  onChangeSite,
 } from './hud/hud.js';
 import { createCombat } from './combat/combat.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
@@ -64,8 +70,8 @@ const BASE_FOV_DEG = 60;
 const SPEED_FOV_DEG = 16; // extra FOV at full speed
 // Speed at which effects (blur / vignette / FOV) reach full intensity.
 const FX_FULL_SPEED = MAX_SPEED * 1.6;
-const MIN_ALT = 30; // safety floor (only used if the mesh can't be sampled)
-const MAX_ALT = 900;
+// The altitude envelope comes from the site (sites.js): minAlt is a safety
+// floor, only used if the mesh can't be sampled.
 // A depth sample is only trustworthy when it is at or below the suit. Fresh
 // photogrammetry LODs can otherwise briefly report an unrelated tile far above
 // the pilot, which must never teleport the player or the chase camera.
@@ -158,14 +164,25 @@ const MOTION_LERP = 0.15; // smoothing for velocities read off a remote track
 const REMOTE_SURFACE_MS = 250; // AGL sampling under a remote track we're watching
 const LABEL_HEIGHT = 14; // m above the boots for a pilot's name tag
 
+// How long to hold the suit on arrival while the ground under an unmeasured
+// site streams in and is measured (see settleSite).
+const ARRIVAL_TIMEOUT_MS = 12000;
+
 const JARVIS_LINES = {
-  online: 'Suit online. Homewood airspace is clear, sir.',
+  online: () => `Suit online. ${site.name} airspace is clear, sir.`,
+  perimeter: () =>
+    site.polygon
+      ? 'Homewood perimeter engaged. Keeping you inside campus airspace, sir.'
+      : `Flight perimeter engaged. Keeping you over ${site.name}, sir.`,
+  missionOn: 'Mission active. Four hostile drones inbound — two will shoot back, sir.',
+  missionOff: 'Mission ended. Drones standing down, sir.',
+  missionNoLink: 'No SpacetimeDB link, sir. I cannot launch the drones without it.',
   bump: [
     'Structural contact. The architecture is not the enemy, sir.',
     'That was a building. They rarely move.',
   ],
   pilotJoined: (name) =>
-    `A second suit has entered Homewood airspace, sir. ${name} is airborne — press V to take their view.`,
+    `A second suit has entered our airspace, sir. ${name} is airborne — press V to take their view.`,
   pilotLeft: (name) => `${name}'s suit has gone quiet, sir.`,
   povLost: (name) => `Lost ${name}'s feed. Back on your suit, sir.`,
   missileAway: ['Missile away.', 'Fox three, sir.', 'Missile tracking. Do try to look impressed.'],
@@ -180,7 +197,7 @@ const JARVIS_LINES = {
   wingmanDowned: (name) => `${name} has been shot down. Rebooting their suit beside you, sir.`,
   inbound: 'Missile inbound. I recommend being somewhere else, sir.',
   struck: (hp) => `Direct hit. Suit integrity at ${Math.round(hp)} percent.`,
-  downed: 'Suit integrity lost. Rebooting over the quad, sir.',
+  downed: 'Suit integrity lost. Rebooting at the arrival point, sir.',
   droneBump: [
     'That was a drone, sir. Ramming is not an approved weapon system.',
     'Contact with a sentinel. No damage — to us, at least.',
@@ -218,13 +235,13 @@ function flightState({ longitude, latitude, altitude, heading }) {
 
 function spawnState() {
   return {
-    ...flightState({ ...JHU_HOMEWOOD, heading: 0 }),
+    ...flightState(site.spawn),
     health: 100,
     mode: isGloveConnected() ? 'GLOVE' : 'KEYBOARD',
   };
 }
 
-let suit = spawnState();
+let suit = null; // created in boot(), once the pilot has picked a site
 let repulsor = null; // { entity, born } — fist-clench blast visual
 
 // Collision sensors for one suit: a sampled floor under it and a forward ray.
@@ -245,7 +262,7 @@ let trailClearNeeded = false; // flush the afterburner trail after a teleport
 let idle = false; // suit is still enough to levitate
 let hoverBlend = 0; // 0..1 ease for the idle hover
 let hoverClock = 0; // seconds, advances the hover sine
-let homewoodBoundary = null;
+let boundary = null; // the site's flight perimeter
 let boundaryWarnUntil = 0;
 let lockState = 'CLEAR'; // autolock state from the previous frame
 let droneBumpUntil = 0;
@@ -312,7 +329,7 @@ function leanTarget(s) {
 // One step of the suit flight model, shared by our suit and by the phone
 // pilots we fly from their control inputs. `input`: throttle, yaw, climb in
 // -1..1, an optional dive in 0..1, plus a boost flag. Returns true when the
-// Homewood perimeter stopped the suit this step.
+// site's perimeter stopped the suit this step.
 function flySuit(s, input, dt) {
   const dive = Math.max(0, Math.min(1, input.dive || 0));
   s.dive = smooth(s.dive, dive, ANGLE_LERP, dt);
@@ -336,8 +353,8 @@ function flySuit(s, input, dt) {
   // along a real flight path rather than a key state.
   s.vspeed = smooth(s.vspeed, input.climb * CLIMB_RATE - dive * DIVE_RATE, SPEED_LERP, dt);
   s.altitude += s.vspeed * dt;
-  if (s.altitude < MIN_ALT || s.altitude > MAX_ALT) {
-    s.altitude = Math.min(MAX_ALT, Math.max(MIN_ALT, s.altitude));
+  if (s.altitude < site.minAlt || s.altitude > site.maxAlt) {
+    s.altitude = Math.min(site.maxAlt, Math.max(site.minAlt, s.altitude));
     s.vspeed = 0;
   }
 
@@ -352,11 +369,11 @@ function flySuit(s, input, dt) {
   s.latitude += dNorth / 111320;
   s.longitude += dEast / (111320 * Math.cos(latRad));
 
-  // Homewood is the complete playable world: the holographic perimeter is
-  // visible at the edge of campus, and this constraint makes it a real flight
-  // barrier at every altitude instead of just decorative geometry.
-  if (homewoodBoundary) {
-    const confined = homewoodBoundary.confine(
+  // The site is the complete playable world: the holographic perimeter is
+  // visible at its edge, and this constraint makes it a real flight barrier
+  // at every altitude instead of just decorative geometry.
+  if (boundary) {
+    const confined = boundary.confine(
       previousLongitude,
       previousLatitude,
       s.longitude,
@@ -405,7 +422,7 @@ function stepFlight(dt) {
 
   if (flySuit(suit, input, dt) && performance.now() >= boundaryWarnUntil) {
     boundaryWarnUntil = performance.now() + BOUNDARY_WARN_COOLDOWN_MS;
-    setJarvis('Homewood perimeter engaged. Keeping you inside campus airspace, sir.');
+    setJarvis(JARVIS_LINES.perimeter());
   }
 
   let bankTarget = 0;
@@ -725,7 +742,7 @@ function wingmanSpawn() {
     const right = WINGMAN_OFFSET * side; // right of our heading: (east, north) = (cos h, -sin h)
     const longitude = suit.longitude + (Math.cos(headingRad) * right) / metresPerLon;
     const latitude = suit.latitude - (Math.sin(headingRad) * right) / 111320;
-    if (side === 0 || !homewoodBoundary || homewoodBoundary.contains(longitude, latitude)) {
+    if (side === 0 || !boundary || boundary.contains(longitude, latitude)) {
       return flightState({ longitude, latitude, altitude: suit.altitude, heading: suit.heading });
     }
   }
@@ -872,7 +889,68 @@ function cyclePov() {
 async function boot() {
   initHUD();
   initAttitude();
+
+  if (!hasValidToken()) {
+    showBanner(
+      `<b>Cesium Ion token required.</b><br><br>` +
+        `Paste your token into <code>client/.env</code>:<br>` +
+        `<code>VITE_CESIUM_TOKEN=&lt;your token&gt;</code><br><br>` +
+        `Get a free token at <code>ion.cesium.com/tokens</code>, then restart the dev server.`,
+      true,
+    );
+    return;
+  }
+
+  // Seed Cesium with the requested site (or JHU) before the pilot chooses.
+  // That keeps the real canvas mounted and its world assets loading behind the
+  // boot/destination overlays. The actual choice is applied again below,
+  // before a suit, boundary, or any game motion is created.
+  const params = new URLSearchParams(window.location.search);
+  const asked = findSite(params.get('site'));
+  const provisional = asked ?? findSite('jhu');
+  chooseSite(provisional.id);
+
+  let selectingDestination = true;
+  let preloadFrame = null;
+  let worldInitError = null;
+  const worldPromise = initWorld()
+    .then((preloadViewer) => {
+      // initWorld intentionally disables Cesium's default loop. Render only
+      // while the overlay is open so terrain/tiles can stream before launch.
+      const preload = () => {
+        if (!selectingDestination) return;
+        preloadViewer.resize();
+        preloadViewer.render();
+        preloadFrame = requestAnimationFrame(preload);
+      };
+      preloadFrame = requestAnimationFrame(preload);
+      return preloadViewer;
+    })
+    .catch((err) => {
+      worldInitError = err;
+      return null;
+    });
+
+  // The URL site remains a useful reload hint, but the two-screen pre-flight
+  // flow always stays available. With no hint, JHU Homewood is selected.
+  const selected = await pickSite(provisional);
+  selectingDestination = false;
+  if (preloadFrame !== null) cancelAnimationFrame(preloadFrame);
+  chooseSite(selected.id);
+  params.set('site', site.id);
+  window.history.replaceState(null, '', `?${params}`);
+
+  // Arrow keys belong to destination selection until this point; initialize
+  // the flight keyboard only after its selection listener has been removed.
   initKeyboard();
+  onChangeSite(() => {
+    params.delete('site');
+    window.location.search = params.toString();
+  });
+  setSiteName(site.short);
+  document.title = `IRON GLOVE — ${site.name}`;
+  setJarvis(JARVIS_LINES.online());
+  suit = spawnState();
 
   setGloveButton(false, hasWebSerial());
   setInputHint('KEYBOARD');
@@ -891,20 +969,11 @@ async function boot() {
     connectGlove();
   });
 
-  if (!hasValidToken()) {
-    showBanner(
-      `<b>Cesium Ion token required.</b><br><br>` +
-        `Paste your token into <code>client/.env</code>:<br>` +
-        `<code>VITE_CESIUM_TOKEN=&lt;your token&gt;</code><br><br>` +
-        `Get a free token at <code>ion.cesium.com/tokens</code>, then restart the dev server.`,
-      true,
-    );
-    return;
-  }
-
+  showBanner(`Inbound to <b>${site.name}</b><br>${site.place}`);
   let viewer;
   try {
-    viewer = await initWorld();
+    viewer = await worldPromise;
+    if (!viewer) throw worldInitError ?? new Error('World initialization did not return a viewer.');
   } catch (err) {
     console.error(err);
     showBanner(
@@ -924,7 +993,32 @@ async function boot() {
     'GPU';
   setGfx(`${quality.label} · ${gpuShort}`, quality.gpu);
 
-  homewoodBoundary = initHomewoodBoundary(viewer);
+  // An unmeasured site holds the suit at its estimated arrival height while
+  // the ground below streams in; once that is measured the pilot is put at the
+  // proper height and the perimeter and drones are set to match.
+  let arriving = !site.measured;
+  function arrive(heights = []) {
+    if (!arriving) return;
+    arriving = false;
+    settleSite(Math.max(...heights.filter(Number.isFinite), -Infinity));
+    suit = spawnState();
+    localSensors.surface = undefined;
+    boundary = initBoundary(viewer, site);
+    setMissionButton(false, true);
+    hideBanner();
+  }
+  if (arriving) {
+    showBanner(`Scanning terrain at <b>${site.name}</b>…`);
+    const under = [site, site.spawn].map((p) => Cesium.Cartographic.fromDegrees(p.longitude, p.latitude));
+    viewer.scene
+      .sampleHeightMostDetailed(under)
+      .then((measured) => arrive(measured.map((c) => c.height)))
+      .catch(() => arrive());
+    setTimeout(arrive, ARRIVAL_TIMEOUT_MS);
+  } else {
+    boundary = initBoundary(viewer, site);
+    setMissionButton(false, true);
+  }
   const overlay = initSuitOverlay(viewer, '/iron_man_ucm.glb');
   const suit3d = overlay.createSuit({ name: PLAYER_ID });
   const tracker = createTracker(overlay);
@@ -961,6 +1055,12 @@ async function boot() {
     removePilot(viewer, pilot);
     if (povId === playerId) povId = null;
     refreshPov();
+  }
+
+  let missionActive = false;
+  function setMission(active) {
+    missionActive = active;
+    setMissionButton(active, !arriving);
   }
 
   // Drones, autolock and missiles. The server flies the drones; rows arrive
@@ -1001,6 +1101,9 @@ async function boot() {
       } else if (s === 'offline' || s === 'error') {
         console.warn(`[stdb] link ${s} — flying on local physics only`);
       }
+      // A new link starts with the sky cleared (client.js), and a lost one
+      // takes the drones with it.
+      if (s !== 'connected') setMission(false);
     },
     onPlayer: (row, live) => {
       // Our own row confirms the telemetry round-trip. It must not drive the
@@ -1014,6 +1117,23 @@ async function boot() {
     onMissile: missileInbound,
   });
   stdb.start();
+
+  // ACTIVATE MISSION (the HUD button, or M): the drones only exist while a
+  // mission is on. The same control ends it.
+  function toggleMission() {
+    if (arriving) return;
+    const ok = missionActive ? stdb.endMission() : stdb.activateMission(site);
+    if (!ok) {
+      setJarvis(JARVIS_LINES.missionNoLink);
+      return;
+    }
+    setMission(!missionActive);
+    setJarvis(missionActive ? JARVIS_LINES.missionOn : JARVIS_LINES.missionOff);
+  }
+  onMissionButton(toggleMission);
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyM' && !e.repeat) toggleMission();
+  });
 
   // Cesium's canvas is resized from here (its own render loop is off), but
   // only when the page says its size changed: asking every frame forces a
@@ -1032,8 +1152,10 @@ async function boot() {
     last = now;
     if (dt > 0.1) dt = 0.1; // clamp after tab-out
 
-    stepFlight(dt);
-    if (collide(viewer, suit, localSensors, now)) setJarvis(pick(JARVIS_LINES.bump));
+    if (!arriving) {
+      stepFlight(dt);
+      if (collide(viewer, suit, localSensors, now)) setJarvis(pick(JARVIS_LINES.bump));
+    }
     // Fire command: Space (only while a drone is locked) or a flick of the
     // glove. A flick also reads as a fist, so with a lock it is the missile
     // that goes, not the repulsor.

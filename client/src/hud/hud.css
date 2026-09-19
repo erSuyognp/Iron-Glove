@@ -380,6 +380,23 @@ html, body {
   cursor: not-allowed;
   box-shadow: none;
 }
+/* Mission control: red and armed until pressed, steady while the fight is on. */
+.hud-btn.mission {
+  border-color: var(--iron-red);
+  color: #ffd7d4;
+  text-shadow: 0 0 8px #ff3b3088;
+  box-shadow: 0 0 14px #ff3b3044;
+}
+.hud-btn.mission:not(:disabled):not(.live) { animation: mission-armed 1.6s ease-in-out infinite; }
+.hud-btn.mission:hover:not(:disabled) { background: #ff3b3022; box-shadow: 0 0 22px #ff3b3077; }
+.hud-btn.mission .key { border-color: #ff3b3088; }
+.hud-btn.mission.live { background: #ff3b3026; }
+@keyframes mission-armed {
+  50% { box-shadow: 0 0 24px #ff3b3088; }
+}
+.hud-btn.quiet { border-color: var(--iron-cyan-dim); opacity: 0.75; font-size: 10px; padding: 6px 12px; }
+.hud-btn.quiet:hover { opacity: 1; }
+
 /* Camera POV switch — appears when another pilot is airborne. */
 .hud-btn.pov {
   border-color: var(--iron-gold);

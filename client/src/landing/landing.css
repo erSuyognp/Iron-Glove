@@ -1,0 +1,588 @@
+/* Pre-flight screens sit above Cesium and the Three suit overlay. CSS and
+   inline SVG only (landing/art.js): near-black, one warm gold, one reactor
+   red, and a condensed display face over monospace labels. */
+
+#boot,
+#dest {
+  --gold: #e2b85a;
+  --gold-soft: rgba(226, 184, 90, 0.55);
+  --gold-line: rgba(226, 184, 90, 0.22);
+  --red: #e5281c;
+  --ivory: #f6efe0;
+  --ink: #07070a;
+  --display: Bahnschrift, 'DIN Alternate', 'Avenir Next Condensed', 'Roboto Condensed', 'Arial Narrow', sans-serif;
+  --mono: ui-monospace, 'Cascadia Mono', Consolas, SFMono-Regular, Menlo, monospace;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow: hidden;
+  color: var(--ivory);
+  background: var(--ink);
+  font-family: var(--mono);
+}
+
+#boot[hidden],
+#dest[hidden] {
+  display: none;
+}
+
+/* ------------------------------- Shared bar ------------------------------ */
+
+.landing-bar {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: clamp(16px, 2.6vh, 28px) clamp(18px, 3vw, 48px);
+  font-size: clamp(9px, 0.78vw, 12px);
+  letter-spacing: 0.28em;
+  white-space: nowrap;
+}
+
+.landing-mark {
+  color: var(--ivory);
+  font-weight: 700;
+}
+
+.landing-mark i {
+  margin-inline: 0.35em;
+  color: var(--red);
+  font-style: normal;
+}
+
+.landing-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8em;
+  color: var(--gold);
+}
+
+.landing-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 10px var(--gold);
+  animation: landing-blink 2.4s ease-in-out infinite;
+}
+
+@keyframes landing-blink {
+  50% { opacity: 0.25; }
+}
+
+/* ---------------------------------- Boot --------------------------------- */
+
+.boot-screen {
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(ellipse 60% 48% at 50% 34%, rgba(229, 40, 28, 0.26), transparent 70%),
+    radial-gradient(ellipse 90% 70% at 50% 110%, rgba(226, 184, 90, 0.1), transparent 60%),
+    var(--ink);
+}
+
+/* A faint survey grid, faded out towards the edges. */
+.boot-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(var(--gold-line) 1px, transparent 1px) 50% 50% / 64px 64px,
+    linear-gradient(90deg, var(--gold-line) 1px, transparent 1px) 50% 50% / 64px 64px;
+  opacity: 0.4;
+  -webkit-mask-image: radial-gradient(ellipse 70% 62% at 50% 45%, #000, transparent 78%);
+  mask-image: radial-gradient(ellipse 70% 62% at 50% 45%, #000, transparent 78%);
+  pointer-events: none;
+}
+
+.boot-core {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 24px;
+  text-align: center;
+  animation: landing-rise 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes landing-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+
+/* The arc reactor: three rings around a hot core, turning slowly. */
+.reactor {
+  position: relative;
+  width: clamp(120px, 24vmin, 250px);
+  aspect-ratio: 1;
+  margin-bottom: clamp(20px, 4.5vh, 48px);
+  border-radius: 50%;
+  filter: drop-shadow(0 0 34px rgba(229, 40, 28, 0.55));
+}
+
+.reactor-ring,
+.reactor-heart {
+  position: absolute;
+  border-radius: 50%;
+}
+
+.reactor-ring-outer {
+  inset: 0;
+  border: 1px solid var(--gold-soft);
+  background: conic-gradient(from 0deg, transparent 0 8%, var(--gold) 8% 9%, transparent 9% 41%, var(--gold) 41% 42%, transparent 42% 74%, var(--gold) 74% 75%, transparent 75%);
+  -webkit-mask-image: radial-gradient(circle, transparent 66%, #000 67%);
+  mask-image: radial-gradient(circle, transparent 66%, #000 67%);
+  animation: reactor-spin 28s linear infinite;
+}
+
+.reactor-ring-cells {
+  inset: 11%;
+  background: repeating-conic-gradient(from 0deg, #ffe9d2 0 26deg, transparent 26deg 36deg);
+  -webkit-mask-image: radial-gradient(circle, transparent 50%, #000 51%, #000 69%, transparent 70%);
+  mask-image: radial-gradient(circle, transparent 50%, #000 51%, #000 69%, transparent 70%);
+  box-shadow: 0 0 30px rgba(255, 190, 150, 0.4);
+  animation: reactor-spin 40s linear infinite reverse;
+}
+
+.reactor-ring-inner {
+  inset: 31%;
+  border: 2px solid rgba(255, 226, 200, 0.85);
+  box-shadow: 0 0 18px rgba(255, 140, 110, 0.8), inset 0 0 18px rgba(255, 140, 110, 0.6);
+}
+
+.reactor-heart {
+  inset: 39%;
+  background: radial-gradient(circle, #fff 0 30%, #ffd9b8 52%, #ff6a4d 82%, transparent 100%);
+  box-shadow: 0 0 40px 10px rgba(255, 120, 90, 0.65);
+  animation: reactor-pulse 3.2s ease-in-out infinite;
+}
+
+@keyframes reactor-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes reactor-pulse {
+  50% {
+    transform: scale(0.9);
+    opacity: 0.82;
+  }
+}
+
+.boot-eyebrow {
+  margin: 0 0 clamp(10px, 1.8vh, 18px);
+  color: var(--gold);
+  font-size: clamp(9px, 0.85vw, 13px);
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+}
+
+.boot-wordmark {
+  margin: 0;
+  background: linear-gradient(180deg, #fffaf0 18%, #f0d7a0 62%, #b98a38 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-family: var(--display);
+  font-size: clamp(44px, 9.4vw, 148px);
+  font-stretch: 75%;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 0.95;
+  text-indent: 0.1em;
+  white-space: nowrap;
+  filter: drop-shadow(0 6px 30px rgba(229, 40, 28, 0.35));
+}
+
+.boot-tagline {
+  max-width: 34em;
+  margin: clamp(14px, 2.4vh, 24px) 0 clamp(24px, 4.4vh, 44px);
+  color: rgba(246, 239, 224, 0.72);
+  font-family: var(--display);
+  font-size: clamp(14px, 1.35vw, 20px);
+  letter-spacing: 0.03em;
+  line-height: 1.45;
+}
+
+#btnStart,
+#dest-launch {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1em;
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  padding: 1.05em 2.3em;
+  color: #14100a;
+  background: linear-gradient(180deg, #f6dc98, #d7a640);
+  box-shadow: 0 0 0 5px rgba(226, 184, 90, 0.1), 0 12px 36px rgba(226, 184, 90, 0.22);
+  font-family: var(--mono);
+  font-size: clamp(11px, 0.9vw, 14px);
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  cursor: pointer;
+  transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
+}
+
+#btnStart span,
+#dest-launch span {
+  font-size: 1.25em;
+  line-height: 0;
+  transition: transform 180ms ease;
+}
+
+#btnStart:hover,
+#btnStart:focus-visible,
+#dest-launch:hover,
+#dest-launch:focus-visible {
+  outline: none;
+  filter: brightness(1.08);
+  box-shadow: 0 0 0 7px rgba(226, 184, 90, 0.16), 0 14px 46px rgba(226, 184, 90, 0.4);
+  transform: translateY(-2px);
+}
+
+#btnStart:hover span,
+#btnStart:focus-visible span,
+#dest-launch:hover span,
+#dest-launch:focus-visible span {
+  transform: translateX(4px);
+}
+
+.boot-foot {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: clamp(14px, 2vw, 30px);
+  padding: clamp(14px, 2.4vh, 24px) clamp(18px, 3vw, 48px);
+  border-top: 1px solid var(--gold-line);
+  font-size: clamp(8px, 0.72vw, 11px);
+  letter-spacing: 0.24em;
+  white-space: nowrap;
+}
+
+.boot-foot-label {
+  color: var(--gold);
+}
+
+.boot-foot ul {
+  display: flex;
+  flex: 1;
+  justify-content: space-between;
+  gap: 18px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: rgba(246, 239, 224, 0.5);
+  list-style: none;
+}
+
+/* ----------------------------- Destination UI ---------------------------- */
+
+.destination-screen {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+/* The poster fills the whole screen; everything else floats over it. */
+.destination-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.destination-art,
+.destination-art-layer,
+.destination-art-layer svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Pushed right and up so the landmark clears the copy and the filmstrip; the
+   cut edges are feathered into the background. */
+.destination-art-layer {
+  inset: 0 0 13% 15%;
+  width: auto;
+  height: auto;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 22%), linear-gradient(0deg, transparent, #000 24%);
+  mask-image: linear-gradient(90deg, transparent, #000 22%), linear-gradient(0deg, transparent, #000 24%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  animation: destination-reveal 700ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes destination-reveal {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+
+/* Scrims: text side, filmstrip side, and a touch of scanline. */
+.destination-preview::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(7, 7, 10, 0.88) 0%, rgba(7, 7, 10, 0.55) 34%, transparent 64%),
+    linear-gradient(0deg, var(--ink) 0%, rgba(7, 7, 10, 0.82) 24%, transparent 52%),
+    linear-gradient(180deg, rgba(7, 7, 10, 0.6), transparent 18%),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 4px);
+  pointer-events: none;
+}
+
+.destination-copy {
+  position: relative;
+  z-index: 2;
+  align-self: end;
+  max-width: min(640px, 88vw);
+  padding: clamp(70px, 12vh, 120px) clamp(18px, 3vw, 48px) clamp(18px, 3.4vh, 36px);
+}
+
+.destination-kicker {
+  display: inline-block;
+  padding-bottom: 0.9em;
+  border-bottom: 1px solid var(--gold-soft);
+  color: var(--gold);
+  font-size: clamp(9px, 0.78vw, 12px);
+  letter-spacing: 0.32em;
+}
+
+.destination-copy h1 {
+  margin: clamp(12px, 2vh, 20px) 0 0;
+  color: #fffaf0;
+  font-family: var(--display);
+  font-size: clamp(34px, 5.4vw, 84px);
+  font-stretch: 75%;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 0.95;
+  text-shadow: 0 4px 30px rgba(0, 0, 0, 0.6);
+  text-wrap: balance;
+}
+
+.destination-place {
+  margin: clamp(10px, 1.6vh, 16px) 0 0;
+  color: var(--gold);
+  font-size: clamp(10px, 0.85vw, 13px);
+  letter-spacing: 0.24em;
+}
+
+.destination-blurb {
+  max-width: 30em;
+  margin: clamp(10px, 1.8vh, 18px) 0 0;
+  color: rgba(246, 239, 224, 0.78);
+  font-family: var(--display);
+  font-size: clamp(14px, 1.25vw, 19px);
+  line-height: 1.45;
+}
+
+.destination-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: clamp(12px, 2vh, 20px) 0 clamp(16px, 2.8vh, 28px);
+  font-size: clamp(9px, 0.74vw, 11px);
+  letter-spacing: 0.16em;
+}
+
+.destination-meta span {
+  padding: 0.6em 1em;
+  border: 1px solid var(--gold-line);
+  border-radius: 999px;
+  color: rgba(246, 239, 224, 0.8);
+  background: rgba(7, 7, 10, 0.45);
+  backdrop-filter: blur(6px);
+}
+
+/* -------------------------------- Filmstrip ------------------------------ */
+
+.destination-film-area {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  padding: 0 clamp(18px, 3vw, 48px) clamp(16px, 2.8vh, 30px);
+}
+
+.destination-instruction {
+  margin: 0 0 clamp(8px, 1.4vh, 14px);
+  color: rgba(246, 239, 224, 0.45);
+  font-size: clamp(8px, 0.7vw, 11px);
+  letter-spacing: 0.24em;
+  text-align: right;
+}
+
+.destination-instruction span {
+  color: var(--gold);
+}
+
+.destination-filmstrip {
+  display: grid;
+  grid-template-columns: repeat(var(--tile-count, 7), minmax(0, 1fr));
+  gap: clamp(6px, 0.8vw, 14px);
+  min-width: 0;
+  padding-top: 6px;
+  touch-action: pan-x;
+}
+
+.destination-tile {
+  position: relative;
+  display: block;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: var(--ivory);
+  background: none;
+  font-family: var(--mono);
+  text-align: left;
+  cursor: pointer;
+  opacity: 0.62;
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.destination-tile:hover,
+.destination-tile.selected {
+  opacity: 1;
+}
+
+.destination-tile.selected {
+  transform: translateY(-6px);
+}
+
+.destination-tile:focus-visible {
+  outline: none;
+}
+
+.destination-tile-image {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px rgba(246, 239, 224, 0.14), 0 10px 24px rgba(0, 0, 0, 0.5);
+  transition: box-shadow 200ms ease;
+}
+
+.destination-tile-image svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.destination-tile.selected .destination-tile-image {
+  box-shadow: 0 0 0 2px var(--gold), 0 0 28px rgba(226, 184, 90, 0.35), 0 12px 28px rgba(0, 0, 0, 0.6);
+}
+
+.destination-tile:focus-visible .destination-tile-image {
+  box-shadow: 0 0 0 2px #fff, 0 0 28px rgba(226, 184, 90, 0.35);
+}
+
+.destination-tile-number {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  left: 9px;
+  color: #fffaf0;
+  font-size: clamp(9px, 0.74vw, 11px);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+}
+
+.destination-tile-name,
+.destination-tile-place {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.destination-tile-name {
+  margin-top: 9px;
+  font-family: var(--display);
+  font-size: clamp(12px, 1.05vw, 16px);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.destination-tile.selected .destination-tile-name {
+  color: var(--gold);
+}
+
+.destination-tile-place {
+  margin-top: 3px;
+  color: rgba(246, 239, 224, 0.5);
+  font-size: clamp(7px, 0.62vw, 10px);
+  letter-spacing: 0.06em;
+}
+
+@media (max-width: 920px) {
+  .destination-filmstrip {
+    display: flex;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    scroll-behavior: smooth;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .destination-filmstrip::-webkit-scrollbar { display: none; }
+
+  .destination-tile {
+    flex: 0 0 150px;
+    scroll-snap-align: center;
+  }
+
+  .destination-instruction { text-align: left; }
+}
+
+@media (max-width: 720px) {
+  .landing-status { display: none; }
+  .boot-foot-label { display: none; }
+  .boot-wordmark { letter-spacing: 0.06em; }
+
+  .destination-preview::after {
+    background:
+      linear-gradient(0deg, var(--ink) 0%, rgba(7, 7, 10, 0.86) 46%, transparent 80%),
+      linear-gradient(180deg, rgba(7, 7, 10, 0.6), transparent 18%);
+  }
+}
+
+@media (max-height: 640px) {
+  .reactor {
+    width: clamp(84px, 18vmin, 130px);
+    margin-bottom: 14px;
+  }
+
+  .destination-blurb { display: none; }
+  .destination-tile-place { display: none; }
+  .destination-copy { padding-top: 56px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reactor-ring,
+  .reactor-heart,
+  .landing-status i,
+  .boot-core,
+  .destination-art-layer { animation: none; }
+
+  #btnStart,
+  #dest-launch,
+  .destination-tile { transition: none; }
+
+  .destination-filmstrip { scroll-behavior: auto; }
+}

@@ -21,10 +21,12 @@ const HELP_KEYBOARD =
       <span class="key">Q</span>/<span class="key">E</span> roll
       <span class="key">Shift</span> boost
       <span class="key">Space</span> boost · fire when locked
+      <span class="key">M</span> mission
       <span class="key">R</span> reset`;
 
 const HELP_GLOVE =
   `roll 160 climb · roll 0 nose dive · roll −120 thrust · pitch lean · fist blast · flick to fire when locked
+      <span class="key">M</span> mission
       <span class="key">R</span> reset`;
 
 export function initHUD() {
@@ -52,6 +54,37 @@ export function initHUD() {
   els.lock = document.getElementById('hud-lock');
   els.combatFlash = document.getElementById('combat-flash');
   els.gpws = document.getElementById('gpws');
+  els.site = document.getElementById('hud-site');
+  els.missionBtn = document.getElementById('btn-mission');
+  els.changeSite = document.getElementById('btn-change-site');
+}
+
+// Name of the site being flown, under the title.
+export function setSiteName(name) {
+  if (els.site) els.site.textContent = name;
+}
+
+// The mission control: ACTIVATE MISSION launches the drones, END MISSION
+// stands them down. Disabled until the suit has arrived at the site.
+export function setMissionButton(active, enabled = true) {
+  const btn = els.missionBtn;
+  if (!btn) return;
+  btn.disabled = !enabled;
+  btn.classList.toggle('live', active);
+  btn.innerHTML = `${active ? 'END MISSION' : 'ACTIVATE MISSION'} <span class="key">M</span>`;
+}
+
+export function onMissionButton(handler) {
+  if (!els.missionBtn || !handler) return;
+  els.missionBtn.addEventListener('click', (e) => {
+    e.currentTarget.blur();
+    handler();
+  });
+}
+
+export function onChangeSite(handler) {
+  if (!els.changeSite || !handler) return;
+  els.changeSite.addEventListener('click', handler);
 }
 
 // Drone combat readouts. c: { drones, ammo, maxAmmo, reload (0..1), lock }
