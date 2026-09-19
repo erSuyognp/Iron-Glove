@@ -1,49 +1,179 @@
+// WebSerial reader for the MPU-6050 glove.
+// Firmware streams CSV at 115200 baud, 50 Hz, newline-terminated:
+//   pitch,roll,ax,ay,az
+// All floats. No JSON.
+
+const BAUD = 115200;
+const FIST_G = 1.5; // abs(ax) above this (in g) is a fist clench
+const FIST_COOLDOWN_MS = 500;
+const MAX_BUFFER = 4096;
+
 let onGloveData = () => {};
+let onConnection = () => {};
+
+let connected = false;
+let connecting = false;
+let latest = { pitch: 0, roll: 0, ax: 0, ay: 0, az: 0, fist: false };
+
+let fistDown = false;
+let fistQueued = false;
+let fistCooldownUntil = 0;
 
 export function setGloveHandler(fn) {
-  onGloveData = fn;
+  onGloveData = fn || (() => {});
+}
+
+export function setGloveConnectionHandler(fn) {
+  onConnection = fn || (() => {});
+}
+
+export function isGloveConnected() {
+  return connected;
+}
+
+export function hasWebSerial() {
+  return Boolean(navigator.serial);
+}
+
+// Latest CSV sample. ay/az are stored for future gestures.
+export function readGlove() {
+  return latest;
+}
+
+// Rising-edge fist with cooldown. True once per punch.
+export function consumeFist() {
+  if (!fistQueued) return false;
+  fistQueued = false;
+  return true;
+}
+
+function resetFist() {
+  fistDown = false;
+  fistQueued = false;
+  fistCooldownUntil = 0;
+}
+
+function setConnected(value) {
+  if (connected === value) return;
+  connected = value;
+  if (!value) {
+    resetFist();
+    latest = { pitch: 0, roll: 0, ax: 0, ay: 0, az: 0, fist: false };
+  }
+  onConnection(value);
+}
+
+// Wrap degrees to (-180, 180].
+function wrapDeg(a) {
+  return ((((a + 180) % 360) + 360) % 360) - 180;
+}
+
+// IMU is worn chip-face-down on the glove. Firmware rest is roll ≈ ±180
+// (gravity on -Z) and pitch tilts are mirrored vs the hand.
+function calibrateUpsideDown({ pitch, roll, ax, ay, az }) {
+  return {
+    pitch: -pitch,
+    roll: wrapDeg(roll + 180),
+    ax: -ax,
+    ay: -ay,
+    az: -az,
+  };
+}
+
+function parseCsvLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  const parts = trimmed.split(',');
+  if (parts.length < 5) return null;
+
+  const pitch = Number(parts[0]);
+  const roll = Number(parts[1]);
+  const ax = Number(parts[2]);
+  const ay = Number(parts[3]);
+  const az = Number(parts[4]);
+  if (![pitch, roll, ax, ay, az].every(Number.isFinite)) return null;
+
+  return calibrateUpsideDown({ pitch, roll, ax, ay, az });
+}
+
+function noteSample(sample) {
+  const now = performance.now();
+  const punching = Math.abs(sample.ax) > FIST_G;
+  sample.fist = punching;
+
+  if (punching && !fistDown && now >= fistCooldownUntil) {
+    fistQueued = true;
+    fistCooldownUntil = now + FIST_COOLDOWN_MS;
+  }
+  fistDown = punching;
+
+  latest = sample;
+  onGloveData(sample);
+}
+
+async function pump(port) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let reader;
+
+  try {
+    reader = port.readable.getReader();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > MAX_BUFFER) buffer = buffer.slice(-1024);
+
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        const data = parseCsvLine(line);
+        if (data) noteSample(data);
+      }
+    }
+  } catch (err) {
+    console.warn('[glove] serial read ended', err);
+  } finally {
+    try {
+      reader?.releaseLock();
+    } catch {
+      // already released
+    }
+    try {
+      await port.close();
+    } catch {
+      // already closed (unplug)
+    }
+    setConnected(false);
+  }
 }
 
 export async function connectGlove() {
+  if (connected) return true;
+  if (connecting) return false;
+
   if (!navigator.serial) {
     alert('Web Serial requires Chrome. Switch browsers to use the glove.');
     return false;
   }
 
-  const port = await navigator.serial.requestPort();
-  await port.open({ baudRate: 115200 });
-
-  const reader = port.readable.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  (async () => {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value);
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        try {
-          const parts = line.trim().split(',').map(Number);
-          if (parts.length >= 2 && Number.isFinite(parts[0])) {
-            // pitch, roll, ax, ay, az
-            onGloveData({
-              pitch: parts[0],
-              roll:  parts[1],
-              ax:    parts[2] ?? 0,
-              ay:    parts[3] ?? 0,
-              az:    parts[4] ?? 0,
-              fist:  parts[2] != null && Math.abs(parts[2]) > 1.5,
-            });
-          }
-        } catch {}
-      }
+  connecting = true;
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: BAUD });
+    setConnected(true);
+    pump(port);
+    return true;
+  } catch (err) {
+    // NotFoundError / AbortError: user cancelled the port picker.
+    if (err?.name !== 'NotFoundError' && err?.name !== 'AbortError') {
+      console.warn('[glove] connect failed', err);
     }
-  })();
-
-  return true;
+    return false;
+  } finally {
+    connecting = false;
+  }
 }

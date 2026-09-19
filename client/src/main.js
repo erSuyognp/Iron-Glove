@@ -2,7 +2,28 @@ import * as Cesium from 'cesium';
 import { initWorld, hasValidToken, JHU_HOMEWOOD } from './cesium/world.js';
 import { updateChaseCamera } from './cesium/camera.js';
 import { initKeyboard, readAxes } from './input/keyboard.js';
-import { initHUD, updateHUD, setJarvis, setGpws, setNet, showBanner, hideBanner, updateSpeedFx } from './hud/hud.js';
+import {
+  connectGlove,
+  setGloveConnectionHandler,
+  isGloveConnected,
+  readGlove,
+  consumeFist,
+  hasWebSerial,
+} from './input/glove.js';
+import {
+  initHUD,
+  updateHUD,
+  setJarvis,
+  setGpws,
+  setNet,
+  showBanner,
+  hideBanner,
+  updateSpeedFx,
+  onConnectGlove,
+  setGloveButton,
+  setInputHint,
+  flashRepulsor,
+} from './hud/hud.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
 import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
 import { initTrail } from './suit/thruster.js';
@@ -42,6 +63,19 @@ const DAMAGE_SCALE = 0.55; // m/s -> HP
 const DAMAGE_MIN = 6;
 const DAMAGE_MAX = 45;
 const GPWS_ALT = 45; // AGL below which the "PULL UP" warning flashes
+
+// ---- Glove mapping (CSV: pitch,roll,ax,ay,az) ----
+const GLOVE_DEADZONE = 8; // deg — flat hand = hover
+const GLOVE_PITCH_SCALE = 45; // deg for full climb / dive
+const GLOVE_ROLL_SCALE = 45; // deg for full yaw
+const GLOVE_TILT_FOR_SPEED = 40; // combined tilt (deg) for full throttle
+const REPULSOR_LIFE = 0.35; // seconds the blast ellipsoid lasts
+
+const REPULSOR_LINES = [
+  'Repulsor blast away, sir.',
+  'Unibeam capacitor discharged.',
+  'Fist gesture confirmed. Repulsors firing.',
+];
 
 // ---- SpacetimeDB sync (Phase 2) ----
 // The client stays authoritative for physics; we mirror the computed transform
@@ -87,11 +121,12 @@ function spawnState() {
     bank: 0, // degrees — auto-lean into turns, mesh only
     hover: 0, // meters — idle levitation offset (visual only)
     health: 100,
-    mode: 'KEYBOARD',
+    mode: isGloveConnected() ? 'GLOVE' : 'KEYBOARD',
   };
 }
 
 let suit = spawnState();
+let repulsor = null; // { entity, born } — fist-clench blast visual
 
 // Collision / crash bookkeeping.
 let lastSurface; // last sampled surface height under the suit
@@ -135,24 +170,63 @@ function easeHeading(cur, target, k) {
   return (cur + normalizeDeg(target - cur) * k + 360) % 360;
 }
 
-function stepFlight(dt) {
-  const axes = readAxes();
+function clampAxis(v) {
+  return Math.max(-1, Math.min(1, v));
+}
 
-  if (axes.reset) {
+function deadzone(deg, dz) {
+  return Math.abs(deg) < dz ? 0 : deg;
+}
+
+function stepFlight(dt) {
+  const keys = readAxes();
+
+  if (keys.reset) {
     suit = spawnState();
     trailClearNeeded = true;
     return;
   }
 
+  const gloveOn = isGloveConnected();
+  let throttle;
+  let yaw;
+  let climb;
+  let rollInput;
+  let boost;
+
+  if (gloveOn) {
+    const g = readGlove();
+    const pitchCmd = deadzone(g.pitch, GLOVE_DEADZONE);
+    const rollCmd = deadzone(g.roll, GLOVE_DEADZONE);
+    const tilt = Math.hypot(pitchCmd, rollCmd);
+
+    throttle = tilt <= 0 ? 0 : Math.min(1, tilt / GLOVE_TILT_FOR_SPEED);
+    // Palm down (negative pitch) climbs; palm up dives.
+    climb = clampAxis(-pitchCmd / GLOVE_PITCH_SCALE);
+    // Left/right lean yaws the suit.
+    yaw = clampAxis(rollCmd / GLOVE_ROLL_SCALE);
+    rollInput = 0;
+    boost = keys.boost;
+    suit.mode = 'GLOVE';
+  } else {
+    throttle = keys.throttle;
+    yaw = keys.yaw;
+    climb = keys.climb;
+    rollInput = keys.roll;
+    boost = keys.boost;
+    suit.mode = 'KEYBOARD';
+  }
+
   // Target forward speed from throttle (+ optional boost).
-  const targetSpeed = axes.throttle * MAX_SPEED * (axes.boost ? BOOST_MULT : 1);
+  // SPEED_LERP 0.08 is the suit's spring-damper — do not crank this up.
+  const targetSpeed = throttle * MAX_SPEED * (boost ? BOOST_MULT : 1);
   suit.speed = smooth(suit.speed, targetSpeed, SPEED_LERP, dt);
 
   // Yaw turns the suit; scale by dt so it's framerate-independent.
-  suit.heading = (suit.heading + axes.yaw * YAW_RATE * dt + 360) % 360;
+  suit.heading = (suit.heading + yaw * YAW_RATE * dt + 360) % 360;
 
   // Climb / dive.
-  suit.altitude += axes.climb * CLIMB_RATE * dt;
+  suit.altitude += climb * CLIMB_RATE * dt;
   suit.altitude = Math.min(MAX_ALT, Math.max(MIN_ALT, suit.altitude));
 
   // Advance position along heading over the ground.
@@ -164,28 +238,75 @@ function stepFlight(dt) {
   suit.latitude += dNorth / 111320;
   suit.longitude += dEast / (111320 * Math.cos(latRad));
 
-  // Pitch: nose up/down with climb input.
-  suit.pitch = smooth(suit.pitch, axes.climb * 18, ANGLE_LERP, dt);
-
-  // Manual barrel roll (Q/E): rotate continuously while held (can go inverted
-  // or all the way around), then auto-level back to upright when released.
-  if (axes.roll !== 0) {
-    suit.roll = normalizeDeg(suit.roll + axes.roll * ROLL_RATE * dt);
+  if (gloveOn) {
+    const g = readGlove();
+    // IMU pitch → suit pitch (forward/back tilt); IMU roll → suit roll (lean).
+    suit.pitch = smooth(suit.pitch, g.pitch, ANGLE_LERP, dt);
+    suit.roll = smooth(suit.roll, g.roll, ANGLE_LERP, dt);
+    suit.bank = 0;
   } else {
-    suit.roll = smooth(normalizeDeg(suit.roll), 0, ANGLE_LERP, dt);
-  }
+    // Pitch: nose up/down with climb input.
+    suit.pitch = smooth(suit.pitch, climb * 18, ANGLE_LERP, dt);
 
-  // Auto-bank: lean into turns (mesh only, so the camera isn't yanked sideways).
-  suit.bank = smooth(suit.bank, -axes.yaw * 28, ANGLE_LERP, dt);
+    // Manual barrel roll (Q/E): rotate continuously while held (can go inverted
+    // or all the way around), then auto-level back to upright when released.
+    if (rollInput !== 0) {
+      suit.roll = normalizeDeg(suit.roll + rollInput * ROLL_RATE * dt);
+    } else {
+      suit.roll = smooth(normalizeDeg(suit.roll), 0, ANGLE_LERP, dt);
+    }
+
+    // Auto-bank: lean into turns (mesh only, so the camera isn't yanked sideways).
+    suit.bank = smooth(suit.bank, -yaw * 28, ANGLE_LERP, dt);
+  }
 
   // "Still" = no control input and barely moving, so the suit can levitate.
   idle =
-    axes.throttle === 0 &&
-    axes.yaw === 0 &&
-    axes.climb === 0 &&
-    axes.roll === 0 &&
-    !axes.boost &&
+    throttle === 0 &&
+    yaw === 0 &&
+    climb === 0 &&
+    rollInput === 0 &&
+    !boost &&
     Math.abs(suit.speed) < HOVER_IDLE_SPEED;
+}
+
+function triggerRepulsor(viewer) {
+  flashRepulsor();
+  setJarvis(pick(REPULSOR_LINES));
+
+  if (repulsor) {
+    viewer.entities.remove(repulsor.entity);
+  }
+
+  const born = performance.now();
+  const entity = viewer.entities.add({
+    position: new Cesium.CallbackProperty(() => {
+      return Cesium.Cartesian3.fromDegrees(suit.longitude, suit.latitude, suit.altitude);
+    }, false),
+    ellipsoid: {
+      radii: new Cesium.CallbackProperty(() => {
+        const age = (performance.now() - born) / 1000;
+        const s = 8 + Math.min(age, REPULSOR_LIFE) * 90;
+        return new Cesium.Cartesian3(s, s, s);
+      }, false),
+      material: new Cesium.ColorMaterialProperty(
+        new Cesium.CallbackProperty(() => {
+          const age = (performance.now() - born) / 1000;
+          const alpha = 0.5 * Math.max(0, 1 - age / REPULSOR_LIFE);
+          return Cesium.Color.fromCssColorString('#37e7ff').withAlpha(alpha);
+        }, false),
+      ),
+    },
+  });
+  repulsor = { entity, born };
+}
+
+function stepRepulsor(viewer, now) {
+  if (!repulsor) return;
+  if ((now - repulsor.born) / 1000 >= REPULSOR_LIFE) {
+    viewer.entities.remove(repulsor.entity);
+    repulsor = null;
+  }
 }
 
 // Apply impact damage; returns true if damage actually landed (not on cooldown).
@@ -339,6 +460,23 @@ async function boot() {
   initAttitude();
   initKeyboard();
 
+  setGloveButton(false, hasWebSerial());
+  setInputHint('KEYBOARD');
+  setGloveConnectionHandler((ok) => {
+    suit.mode = ok ? 'GLOVE' : 'KEYBOARD';
+    setGloveButton(ok, true);
+    setInputHint(suit.mode);
+    setJarvis(
+      ok
+        ? 'Glove uplink established. Hand control is yours, sir.'
+        : 'Glove uplink lost. Reverting to keyboard, sir.',
+    );
+  });
+  onConnectGlove(() => {
+    if (isGloveConnected()) return;
+    connectGlove();
+  });
+
   if (!hasValidToken()) {
     showBanner(
       `<b>Cesium Ion token required.</b><br><br>` +
@@ -411,7 +549,7 @@ async function boot() {
   setNet('CONNECTING');
   stdb = createStdbClient({
     playerId: PLAYER_ID,
-    mode: 'KEYBOARD',
+    mode: suit.mode,
     onStatus: (s) => {
       setNet(s.toUpperCase());
       if (s === 'online') {
@@ -464,7 +602,11 @@ async function boot() {
     } else {
       stepFlight(dt);
       collisionStep(viewer, suitEntity);
+      if (isGloveConnected() && consumeFist()) {
+        triggerRepulsor(viewer);
+      }
     }
+    stepRepulsor(viewer, now);
 
     if (trailClearNeeded) {
       trail.clear();

@@ -1,25 +1,34 @@
-// Iron Glove — MPU-6050 glove firmware
-// Board: Arduino Uno / Nano  (or ESP32: SCL→22, SDA→21)
-// Library: Adafruit MPU6050 (install via Arduino IDE Library Manager)
-// Wiring (Uno): VCC→3.3V, GND→GND, SCL→A5, SDA→A4
+// D:\iron-glove\firmware\glove.ino
+// Board: ESP32S3 Dev Module  (or LilyGO T-Display-S3)
+// USB CDC On Boot: Enabled
+// Libraries: Adafruit MPU6050, Adafruit Unified Sensor
 
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+
+#define I2C_SDA 18
+#define I2C_SCL 17
+#define PWR_ON  15          // T-Display-S3 peripheral rail
+#define MPU_ADDR 0x68       // A0 left open / to GND
 
 Adafruit_MPU6050 mpu;
 
 float pitch = 0;
 float roll  = 0;
 const float ALPHA = 0.86;
-const float DT    = 0.016;   // 60 Hz
+const float DT    = 0.02;
 
 void setup() {
+  pinMode(PWR_ON, OUTPUT);
+  digitalWrite(PWR_ON, HIGH);
+
   Serial.begin(115200);
   delay(200);
-  Wire.begin();
 
-  if (!mpu.begin()) {
+  Wire.begin(I2C_SDA, I2C_SCL);
+
+  if (!mpu.begin(MPU_ADDR, &Wire)) {
     Serial.println("MPU6050_NOT_FOUND");
     while (1) delay(50);
   }
@@ -43,10 +52,6 @@ void loop() {
   pitch = ALPHA * (pitch + g.gyro.y * (180.0f / PI) * DT) + (1 - ALPHA) * accPitch;
   roll  = ALPHA * (roll  + g.gyro.x * (180.0f / PI) * DT) + (1 - ALPHA) * accRoll;
 
-  // Fist detection: large X acceleration spike
-  bool fist = (fabsf(ax) > 1.5f);
-
-  // Output: pitch,roll,ax,ay,az,fist
   Serial.print(pitch, 2);
   Serial.print(',');
   Serial.print(roll, 2);
@@ -55,9 +60,7 @@ void loop() {
   Serial.print(',');
   Serial.print(ay, 3);
   Serial.print(',');
-  Serial.print(az, 3);
-  Serial.print(',');
-  Serial.println(fist ? 1 : 0);
+  Serial.println(az, 3);
 
-  delay(16);   // ~60 Hz
+  delay(20);   // 50 Hz
 }

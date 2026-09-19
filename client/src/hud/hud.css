@@ -193,6 +193,64 @@ html, body {
   50%, 100% { opacity: 0.15; }
 }
 
+/* Repulsor blast flash */
+#repulsor-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(circle at 50% 58%, rgba(127, 233, 255, 0.42), transparent 58%);
+}
+#repulsor-flash.fire {
+  animation: repulsor-burst 0.38s ease-out;
+}
+@keyframes repulsor-burst {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Hardware action buttons (must receive clicks; HUD is pointer-events: none) */
+.hud-actions {
+  position: static;
+  margin-top: 6px;
+  display: flex;
+  gap: 10px;
+  pointer-events: auto;
+}
+.hud-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(10, 14, 26, 0.75);
+  border: 1px solid var(--iron-cyan);
+  color: var(--iron-cyan);
+  font-family: var(--hud-font);
+  font-size: 11px;
+  letter-spacing: 3px;
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-shadow: var(--hud-glow);
+  box-shadow: 0 0 10px #00ccff33;
+}
+.hud-btn:hover:not(:disabled) {
+  background: #00ccff18;
+  box-shadow: 0 0 18px #00ccff55;
+}
+.hud-btn:focus {
+  outline: none;
+}
+.hud-btn.live {
+  border-color: var(--iron-gold);
+  color: var(--iron-gold);
+  box-shadow: 0 0 14px #c8a02055;
+}
+.hud-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 /* JARVIS ticker */
 .hud-jarvis {
   position: absolute;

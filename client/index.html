@@ -41,6 +41,9 @@
       <div class="stat"><span class="stat-k">HDG</span><span id="hud-hdg" class="stat-v">0</span><span class="stat-u">°</span></div>
       <div class="stat mode"><span class="stat-k">MODE</span><span id="hud-mode" class="stat-v">KEYBOARD</span></div>
       <div class="stat mode"><span class="stat-k">LINK</span><span id="hud-net" class="stat-v">…</span></div>
+      <div class="hud-actions">
+        <button type="button" id="btn-connect-glove" class="hud-btn">CONNECT GLOVE</button>
+      </div>
     </div>
 
     <!-- Heading tape (scrolls with heading) -->
@@ -52,6 +55,9 @@
     <!-- Ground proximity warning -->
     <div id="gpws" class="gpws">PULL UP</div>
 
+    <!-- Repulsor blast flash (fist gesture) -->
+    <div id="repulsor-flash"></div>
+
     <!-- JARVIS ticker (wired for Phase 4, static for now) -->
     <div class="hud-jarvis">
       <span class="jarvis-label">JARVIS</span>
@@ -59,7 +65,7 @@
     </div>
 
     <!-- Bottom help bar -->
-    <div class="hud-help">
+    <div id="hud-help" class="hud-help">
       <span class="key">W</span> thrust
       <span class="key">S</span> brake
       <span class="key">A</span>/<span class="key">D</span> yaw

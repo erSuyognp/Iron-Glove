@@ -2,6 +2,19 @@
 
 const els = {};
 
+const HELP_KEYBOARD =
+  `<span class="key">W</span> thrust
+      <span class="key">S</span> brake
+      <span class="key">A</span>/<span class="key">D</span> yaw
+      <span class="key">↑</span>/<span class="key">↓</span> climb / dive
+      <span class="key">Q</span>/<span class="key">E</span> roll
+      <span class="key">Space</span> boost
+      <span class="key">R</span> reset`;
+
+const HELP_GLOVE =
+  `palm down climb · lean to turn · fist blast
+      <span class="key">R</span> reset`;
+
 export function initHUD() {
   els.alt = document.getElementById('hud-alt');
   els.spd = document.getElementById('hud-spd');
@@ -15,6 +28,45 @@ export function initHUD() {
   els.jarvis = document.getElementById('jarvis-ticker');
   els.speedBlur = document.getElementById('speed-blur');
   els.speedVignette = document.getElementById('speed-vignette');
+  els.connectGlove = document.getElementById('btn-connect-glove');
+  els.help = document.getElementById('hud-help');
+  els.repulsor = document.getElementById('repulsor-flash');
+}
+
+export function onConnectGlove(handler) {
+  if (!els.connectGlove || !handler) return;
+  els.connectGlove.addEventListener('click', (e) => {
+    e.currentTarget.blur();
+    handler();
+  });
+}
+
+export function setGloveButton(connected, serialAvailable = true) {
+  const btn = els.connectGlove;
+  if (!btn) return;
+  if (!serialAvailable) {
+    btn.disabled = true;
+    btn.classList.remove('live');
+    btn.textContent = 'GLOVE N/A';
+    btn.title = 'Web Serial requires Chrome.';
+    return;
+  }
+  btn.disabled = false;
+  btn.title = '';
+  btn.classList.toggle('live', connected);
+  btn.textContent = connected ? 'GLOVE LIVE' : 'CONNECT GLOVE';
+}
+
+export function setInputHint(mode) {
+  if (!els.help) return;
+  els.help.innerHTML = mode === 'GLOVE' ? HELP_GLOVE : HELP_KEYBOARD;
+}
+
+export function flashRepulsor() {
+  if (!els.repulsor) return;
+  els.repulsor.classList.remove('fire');
+  void els.repulsor.offsetWidth;
+  els.repulsor.classList.add('fire');
 }
 
 // ratio: 0 (still) .. 1 (max speed). Ramps edge blur + vignette.
