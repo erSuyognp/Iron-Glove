@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Iron Glove — Suit Controller</title>
+  <style>
+    body {
+      background: #0a0e1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #00ccff;
+    }
+    #activate-btn {
+      background: transparent;
+      border: 2px solid #00ccff;
+      color: #00ccff;
+      font-size: 20px;
+      letter-spacing: 3px;
+      padding: 20px 40px;
+      border-radius: 8px;
+      cursor: pointer;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 10px #00ccff44; }
+      50%       { box-shadow: 0 0 30px #00ccff99; }
+    }
+    #status { margin-top: 20px; font-size: 12px; opacity: 0.6; }
+    #orient { margin-top: 12px; font-size: 11px; opacity: 0.4; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div style="font-size: 28px; font-weight: bold; margin-bottom: 8px;">IRON GLOVE</div>
+  <div style="color: #c8a020; letter-spacing: 4px; margin-bottom: 60px;">JUDGE CONTROLLER</div>
+  <button id="activate-btn" onclick="activateSuit()">ACTIVATE SUIT</button>
+  <div id="status">Waiting for activation...</div>
+  <div id="orient"></div>
+
+  <script type="module">
+    const STDB_HOST   = 'wss://maincloud.spacetimedb.com';
+    const STDB_DB     = 'iron-glove-suyog';
+
+    let client = null;
+
+    window.activateSuit = async function () {
+      // iOS permission gate
+      if (typeof DeviceOrientationEvent !== 'undefined'
+          && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const perm = await DeviceOrientationEvent.requestPermission();
+        if (perm !== 'granted') {
+          document.getElementById('status').textContent = 'Permission denied.';
+          return;
+        }
+      }
+
+      document.getElementById('status').textContent = 'Connecting…';
+
+      try {
+        const { DbConnection } = await import(
+          'https://cdn.jsdelivr.net/npm/@clockworklabs/spacetimedb-sdk@1/dist/index.browser.mjs'
+        );
+
+        client = DbConnection.builder()
+          .withUri(STDB_HOST)
+          .withDatabaseName(STDB_DB)
+          .onConnect((conn) => {
+            conn.subscriptionBuilder()
+              .onApplied(() => {
+                conn.reducers.join({ name: 'Judge' });
+                document.getElementById('activate-btn').textContent = 'SUIT ACTIVE';
+                document.getElementById('status').textContent = 'Tilt to fly · Fist to blast';
+              })
+              .subscribe(['SELECT * FROM pilot']);
+          })
+          .onConnectError((_ctx, err) => {
+            document.getElementById('status').textContent = 'Error: ' + (err?.message ?? err);
+          })
+          .build();
+
+        let lastSend = 0;
+        window.addEventListener('deviceorientation', (e) => {
+          const now = Date.now();
+          if (now - lastSend < 33) return; // ~30 Hz
+          lastSend = now;
+
+          document.getElementById('orient').textContent =
+            `β ${e.beta?.toFixed(1)} γ ${e.gamma?.toFixed(1)} α ${e.alpha?.toFixed(1)}`;
+
+          if (!client) return;
+          // Use the update_pose reducer with phone orientation
+          client.reducers?.updatePose?.({
+            x: 0, y: 0, z: 0,
+            yaw: (e.alpha ?? 0) * Math.PI / 180,
+            thrusting: Math.abs(e.beta ?? 0) > 20,
+          });
+        }, true);
+
+      } catch (err) {
+        document.getElementById('status').textContent = 'Failed: ' + err.message;
+        console.error(err);
+      }
+    };
+  </script>
+</body>
+</html>
