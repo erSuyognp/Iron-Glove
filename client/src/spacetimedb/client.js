@@ -2,10 +2,11 @@
 //
 // Thin wrapper over the generated bindings. The client stays authoritative for
 // all flight physics; this module only:
-//   1. connects to the module and subscribes to `player_state`,
+//   1. connects to the module and subscribes to the other pilots' rows in
+//      `player_state` (not our own, which would only echo what we push),
 //   2. calls join_game once on connect,
 //   3. pushes the client-computed transform via update_orientation, and
-//   4. reads our own row back out (proving the round-trip) via a callback.
+//   4. hands every other pilot's row to the caller via a callback.
 //
 // It fails soft: if the module is unreachable the game keeps running on local
 // physics and just reports an offline status.
@@ -46,6 +47,15 @@ export function createStdbClient({
     if (onStatus) onStatus(s);
   };
 
+  // Reducer calls return promises; a failure (e.g. a dropped link) is logged
+  // once per reducer rather than surfacing as an unhandled rejection per call.
+  const reported = new Set();
+  const reducerFailed = (name) => (err) => {
+    if (reported.has(name)) return;
+    reported.add(name);
+    console.warn(`[stdb] ${name} failed:`, err?.message ?? err);
+  };
+
   function handleRow(row, live) {
     if (onPlayer) onPlayer(row, live);
   }
@@ -69,14 +79,24 @@ export function createStdbClient({
             if (onPlayerLeave) onPlayerLeave(row);
           });
 
+          const onApplied = () => {
+            if (subscribed) return;
+            subscribed = true;
+            // Insert (or reset) our row at the spawn point.
+            c.reducers.joinGame({ playerId, mode }).catch(reducerFailed('join_game'));
+            status('online');
+          };
+          // Only other pilots' rows: our own would just echo every transform
+          // we push straight back to us. Falls back to the whole table if the
+          // server rejects the filter.
+          const others = `SELECT * FROM player_state WHERE player_id != '${playerId.replace(/'/g, "''")}'`;
           c.subscriptionBuilder()
-            .onApplied(() => {
-              subscribed = true;
-              // Insert (or reset) our row at the spawn point.
-              c.reducers.joinGame({ playerId, mode });
-              status('online');
+            .onApplied(onApplied)
+            .onError(() => {
+              console.warn('[stdb] filtered subscription rejected — subscribing to all players');
+              c.subscriptionBuilder().onApplied(onApplied).subscribe(['SELECT * FROM player_state']);
             })
-            .subscribe(['SELECT * FROM player_state']);
+            .subscribe([others]);
         })
         .onDisconnect(() => {
           connected = false;
@@ -102,16 +122,18 @@ export function createStdbClient({
   // never fire update_orientation before join_game has created the row.
   function pushTransform(t) {
     if (!conn || !subscribed) return;
-    conn.reducers.updateOrientation({
-      playerId,
-      positionX: t.positionX,
-      positionY: t.positionY,
-      positionZ: t.positionZ,
-      pitch: t.pitch,
-      roll: t.roll,
-      yaw: t.yaw,
-      mode: t.mode,
-    });
+    conn.reducers
+      .updateOrientation({
+        playerId,
+        positionX: t.positionX,
+        positionY: t.positionY,
+        positionZ: t.positionZ,
+        pitch: t.pitch,
+        roll: t.roll,
+        yaw: t.yaw,
+        mode: t.mode,
+      })
+      .catch(reducerFailed('update_orientation'));
   }
 
   return {

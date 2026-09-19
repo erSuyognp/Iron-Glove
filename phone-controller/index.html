@@ -20,16 +20,25 @@
          DeviceOrientationEvent.requestPermission() gate (a no-op on Android /
          older iOS, which never require it).
       2. Connects to the existing SpacetimeDB module and calls the join_game
-         reducer with player_id 'judge' and mode 'PHONE'.
-      3. Streams the phone's deviceorientation (pitch=beta, roll=gamma,
-         yaw=alpha) to the update_orientation reducer at ~30 Hz.
+         reducer with player_id 'judge' and mode 'PHONE_CTRL'.
+      3. Streams the judge's CONTROL INPUTS — not positions — through the
+         update_orientation reducer:
+           tilt forward / back   -> throttle (fly forward / brake + reverse)
+           tilt left / right     -> turn
+           hold ▲ / ▼            -> climb / dive
+           hold BOOST            -> afterburner
 
-    Note on positions: the Phase 2 update_orientation reducer also carries
-    position_x/y/z (physics is client-side; the server is a dumb store) and only
-    updates a row that already exists — hence join_game first. So we also run a
-    light client-side flight integrator here (tilt to fly) so the judge's suit
-    actually translates over the campus, exactly like the laptop client does for
-    its own row.
+    The phone is only an input device. The laptop flies the judge's suit with
+    the same flight model as the host's suit, at full frame rate, so motion is
+    smooth no matter how sparse the updates are — and the judge obeys the
+    campus perimeter and building collisions. That lets the phone send very
+    little: quantized controls only when they change (at most 10/s) plus a
+    1 Hz heartbeat that tells the laptop the judge is still connected.
+
+    Wire format (update_orientation fields, mode = 'PHONE_CTRL'):
+      pitch = throttle (-1..1, + = forward)   roll = turn (-1..1, + = right)
+      yaw   = climb    (-1..1, + = up)        position_x = boost (0 | 1)
+    The laptop decodes the same layout in client/src/main.js.
 
     SpacetimeDB SDK: loaded from esm.sh (the unified `spacetimedb` 2.10 package,
     browser build, deps bundled). We reconstruct the tiny slice of the generated
@@ -81,7 +90,8 @@
       min-height: 100%;
       padding: max(18px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
       position: relative;
-      overflow: hidden;
+      overflow-x: hidden;
+      overflow-y: auto; /* short screens can still reach CALIBRATE / LINK */
     }
 
     /* faint hex-grid ambience */
@@ -121,6 +131,9 @@
       align-items: center;
       justify-content: center;
     }
+    /* Flying: make room for the hold buttons. */
+    body.active .reticle-wrap { width: min(44vw, 180px); margin: 12px 0 4px; }
+    body.active .telem { margin-top: 12px; }
     .ring {
       position: absolute;
       border-radius: 50%;
@@ -232,6 +245,45 @@
     .bar .fill { position:absolute; top:0; bottom:0; left:50%; width:0; background: linear-gradient(90deg, var(--cyan-dim), var(--cyan)); box-shadow: 0 0 8px var(--cyan); }
     .bar.thr .fill { background: linear-gradient(90deg, var(--gold-dim), var(--gold)); box-shadow: 0 0 8px var(--gold); }
 
+    /* ---- Hold buttons (shown once the suit is active) ---- */
+    .pad {
+      width: min(92vw, 380px);
+      margin-top: 14px;
+      display: none;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 10px;
+    }
+    .pad.on { display: grid; }
+    .hold {
+      min-height: 66px;
+      font-family: inherit;
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 3px;
+      color: var(--cyan);
+      background: linear-gradient(180deg, rgba(55,231,255,0.10), rgba(55,231,255,0.02));
+      border: 2px solid rgba(55,231,255,0.55);
+      border-radius: 12px;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      transition: background 0.06s, box-shadow 0.06s, transform 0.06s;
+    }
+    .hold.down {
+      background: rgba(55,231,255,0.28);
+      box-shadow: 0 0 22px rgba(55,231,255,0.45);
+      transform: scale(0.98);
+    }
+    .hold.boost {
+      grid-row: 1 / span 2;
+      color: var(--gold);
+      border-color: rgba(245,184,61,0.7);
+      background: linear-gradient(180deg, rgba(245,184,61,0.12), rgba(245,184,61,0.02));
+    }
+    .hold.boost.down { background: rgba(245,184,61,0.3); box-shadow: 0 0 24px rgba(245,184,61,0.5); }
+
     .footer { margin-top: auto; padding-top: 14px; display:flex; gap: 14px; align-items:center; font-size: 11px; letter-spacing: 2px; }
     .link { color: var(--dim); text-decoration: none; border-bottom: 1px dashed rgba(109,130,150,0.5); cursor: pointer; }
     .link:active { color: var(--cyan); }
@@ -274,20 +326,26 @@
 
   <button id="activate">ACTIVATE SUIT</button>
   <div id="status">Awaiting activation…</div>
-  <div id="hint">Tap ACTIVATE, allow motion access, then hold the phone flat and tilt to fly.</div>
+  <div id="hint">Tap ACTIVATE and allow motion access. However you're holding the phone then becomes neutral.</div>
+
+  <div class="pad" id="pad">
+    <button class="hold boost" id="btn-boost">BOOST</button>
+    <button class="hold" id="btn-climb">▲ CLIMB</button>
+    <button class="hold" id="btn-dive">▼ DIVE</button>
+  </div>
 
   <div class="telem">
-    <div class="cell"><div class="k">PITCH</div><div class="v" id="t-pitch">—</div></div>
-    <div class="cell"><div class="k">ROLL</div><div class="v" id="t-roll">—</div></div>
-    <div class="cell"><div class="k">YAW</div><div class="v" id="t-yaw">—</div></div>
-    <div class="cell"><div class="k">ALT (m)</div><div class="v small" id="t-alt">—</div></div>
-    <div class="cell"><div class="k">SPD (m/s)</div><div class="v small" id="t-spd">—</div></div>
+    <div class="cell"><div class="k">THRUST</div><div class="v" id="t-thr">—</div></div>
+    <div class="cell"><div class="k">TURN</div><div class="v" id="t-turn">—</div></div>
+    <div class="cell"><div class="k">CLIMB</div><div class="v" id="t-clb">—</div></div>
+    <div class="cell"><div class="k">SENT</div><div class="v small" id="t-rate">—</div></div>
+    <div class="cell"><div class="k">BOOST</div><div class="v small" id="t-boost">OFF</div></div>
     <div class="cell"><div class="k">MODE</div><div class="v small" id="t-mode">PHONE</div></div>
   </div>
 
   <div class="bars">
     <div class="bar thr"><span>THR</span><div class="track"><div class="fill" id="bar-thr"></div></div></div>
-    <div class="bar"><span>CLB</span><div class="track"><div class="fill" id="bar-clb"></div></div></div>
+    <div class="bar"><span>TRN</span><div class="track"><div class="fill" id="bar-turn"></div></div></div>
   </div>
 
   <div class="footer">
@@ -338,21 +396,20 @@
     const DEFAULT_DB = "iron-glove";            // = VITE_SPACETIMEDB_DB_NAME default
 
     const PLAYER_ID = "judge";
-    const MODE = "PHONE";
+    // Tells the laptop this row carries control inputs, not positions.
+    const MODE = "PHONE_CTRL";
 
-    // Spawn point (matches the server's join_game): the JHU Homewood quad.
-    // Repo convention: position_x = longitude, position_y = altitude, position_z = latitude.
-    const SPAWN = { lon: -76.6205, alt: 150.0, lat: 39.3299 };
+    // Tilt feel.
+    const TILT_DEADZONE = 5;   // deg of tilt ignored around neutral
+    const TILT_FULL = 28;      // deg of tilt for full input
+    const REVERSE_MAX = 0.6;   // tilting back brakes, then reverses at up to 60%
+    const TILT_SMOOTH_MS = 90; // low-pass on the raw sensor (hand tremor, sensor noise)
 
-    // Flight feel (kept light; the laptop stays the reference client).
-    const MAX_SPEED = 70;   // m/s at full forward tilt
-    const MAX_CLIMB = 30;   // m/s at full back/forward tilt
-    const SPEED_LERP = 0.08; // weighted, matches the suit's 0.08 lerp
-    const ALT_MIN = 25, ALT_MAX = 900;
-    const DEADZONE = 4;      // deg of tilt ignored around neutral
-    const TILT_FULL = 34;    // deg of tilt = full input
-    const SEND_MS = 33;      // ~30 Hz
-    const M_PER_DEG_LAT = 111320;
+    // Sending: controls are quantized so a steady hand doesn't resend, sent at
+    // most 10x/s while they change, and re-sent once a second as a heartbeat.
+    const STEP = 0.05;
+    const SEND_MIN_MS = 100;
+    const HEARTBEAT_MS = 1000;
 
     /* ---------- runtime config helpers ---------- */
     const qs = new URLSearchParams(location.search);
@@ -435,9 +492,9 @@
     const els = {
       activate: $("activate"), status: $("status"), hint: $("hint"),
       core: $("core"), coreLabel: $("core-label"), horizon: $("horizon"),
-      pitch: $("t-pitch"), roll: $("t-roll"), yaw: $("t-yaw"),
-      alt: $("t-alt"), spd: $("t-spd"),
-      barThr: $("bar-thr"), barClb: $("bar-clb"),
+      pad: $("pad"), boost: $("btn-boost"), climb: $("btn-climb"), dive: $("btn-dive"),
+      thr: $("t-thr"), turn: $("t-turn"), clb: $("t-clb"), rate: $("t-rate"), boostOut: $("t-boost"),
+      barThr: $("bar-thr"), barTurn: $("bar-turn"),
       calibrate: $("calibrate"), openConfig: $("open-config"),
       linkDot: $("link-dot"), linkText: $("link-text"),
       config: $("config"), cfgHost: $("cfg-host"), cfgDb: $("cfg-db"),
@@ -459,87 +516,213 @@
       els.linkText.style.color = color;
     }
 
-    /* ---------- flight state ---------- */
-    const pos = { lon: SPAWN.lon, alt: SPAWN.alt, lat: SPAWN.lat };
-    let heading = 0;         // deg, from alpha
-    let speed = 0;           // m/s (weighted)
-    let neutral = null;      // { beta } captured on activation / calibrate
-    let orient = { beta: 0, gamma: 0, alpha: 0, has: false };
-    let active = false;
-    let conn = null, online = false;
-    let sendTimer = null, lastTick = 0;
-
-    function dz(v) { return Math.abs(v) < DEADZONE ? 0 : v - Math.sign(v) * DEADZONE; }
     function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
 
+    /* ---------- tilt ---------- */
+    let tilt = null;       // low-passed { beta, gamma } from the sensor (device frame)
+    let neutral = null;    // tilt captured on activation / calibrate
+    let lastSampleAt = 0;
+    let active = false;
+    let conn = null, online = false;
+
+    // Screen rotation, so forward and right stay forward and right in landscape.
+    function screenAngle() {
+      const a = screen.orientation?.angle ?? window.orientation ?? 0;
+      return ((a % 360) + 360) % 360;
+    }
+
     function onOrientation(e) {
-      if (e.alpha == null && e.beta == null && e.gamma == null) return;
-      orient = { beta: e.beta || 0, gamma: e.gamma || 0, alpha: e.alpha || 0, has: true };
-      if (!neutral) neutral = { beta: orient.beta };
-      // Live reticle feedback (roll tilts, pitch slides) even before flight loop.
-      const rollDeg = clamp(orient.gamma, -45, 45);
-      const pitchOff = clamp((orient.beta - (neutral ? neutral.beta : 0)) * 0.6, -40, 40);
-      els.horizon.style.transform = `rotate(${-rollDeg}deg) translateY(${pitchOff}px)`;
+      if (e.beta == null || e.gamma == null) return;
+      const now = performance.now();
+      if (!tilt) {
+        tilt = { beta: e.beta, gamma: e.gamma };
+      } else {
+        const k = 1 - Math.exp(-(now - lastSampleAt) / TILT_SMOOTH_MS);
+        tilt.beta += (e.beta - tilt.beta) * k;
+        tilt.gamma += (e.gamma - tilt.gamma) * k;
+      }
+      lastSampleAt = now;
+      if (!neutral) calibrate();
+      refreshControls();
+      maybeSend();
+    }
+
+    // Forward and right tilt away from neutral, in degrees, in the frame of the
+    // screen as it's being held. beta grows as the top edge comes toward you;
+    // gamma grows as the right edge goes down.
+    function userTilt() {
+      if (!tilt || !neutral) return { forward: 0, right: 0 };
+      const db = tilt.beta - neutral.beta;
+      const dg = tilt.gamma - neutral.gamma;
+      switch (screenAngle()) {
+        case 90: return { forward: dg, right: db };
+        case 180: return { forward: db, right: -dg };
+        case 270: return { forward: -dg, right: -db };
+        default: return { forward: -db, right: dg };
+      }
     }
 
     function calibrate() {
-      neutral = orient.has ? { beta: orient.beta } : null;
-      setStatus("Neutral set · tilt to fly");
+      if (tilt) neutral = { beta: tilt.beta, gamma: tilt.gamma };
     }
 
-    /* ---------- flight integration + streaming ---------- */
-    function tick() {
+    /* ---------- controls ---------- */
+    const held = { climb: false, dive: false, boost: false };
+    let controls = { throttle: 0, turn: 0, climb: 0, boost: 0 };
+
+    // Tilt in degrees -> axis: deadzone, then linear up to full at TILT_FULL.
+    function axis(deg, min = -1) {
+      const mag = Math.max(0, Math.abs(deg) - TILT_DEADZONE) / (TILT_FULL - TILT_DEADZONE);
+      return clamp(Math.sign(deg) * mag, min, 1);
+    }
+
+    function quantize(v) {
+      return Number((Math.round(v / STEP) * STEP).toFixed(2)) || 0; // || 0 drops -0
+    }
+
+    // Quantize with hysteresis: move to a new step only once the input has
+    // clearly left the current one, so a hand held near a step boundary
+    // doesn't flicker between two values (and resend each time).
+    function settle(raw, current) {
+      return Math.abs(raw - current) < STEP * 0.75 ? current : quantize(raw);
+    }
+
+    function refreshControls() {
+      const { forward, right } = userTilt();
+      controls = {
+        throttle: settle(axis(forward, -REVERSE_MAX), controls.throttle),
+        turn: settle(axis(right), controls.turn),
+        climb: (held.climb ? 1 : 0) - (held.dive ? 1 : 0),
+        boost: held.boost ? 1 : 0,
+      };
+    }
+
+    /* ---------- sending ---------- */
+    let lastSent = null;
+    let lastSentAt = -Infinity;
+    let flushTimer = null;
+    const sentAt = []; // timestamps of the last second's sends, for the SENT readout
+
+    function sameControls(a, b) {
+      return Boolean(b) && a.throttle === b.throttle && a.turn === b.turn &&
+        a.climb === b.climb && a.boost === b.boost;
+    }
+
+    // Send when the controls change (at most 10x/s), right away on a button
+    // press, and as a 1 Hz heartbeat so the laptop knows we're still here.
+    function maybeSend(force = false) {
+      if (!conn || !online) return;
       const now = performance.now();
-      const dt = lastTick ? Math.min((now - lastTick) / 1000, 0.1) : 0;
-      lastTick = now;
+      const changed = !sameControls(controls, lastSent);
+      const due =
+        force ||
+        now - lastSentAt >= HEARTBEAT_MS ||
+        (changed && now - lastSentAt >= SEND_MIN_MS);
+      if (!due) return;
+      lastSent = { ...controls };
+      lastSentAt = now;
+      sentAt.push(now);
+      conn.reducers
+        .updateOrientation({
+          playerId: PLAYER_ID,
+          pitch: controls.throttle,
+          roll: controls.turn,
+          yaw: controls.climb,
+          positionX: controls.boost,
+          positionY: 0,
+          positionZ: 0,
+          mode: MODE,
+        })
+        ?.catch?.((err) => console.warn("[ig] update_orientation failed:", err?.message ?? err));
+    }
 
-      const n = neutral || { beta: orient.beta };
-      const pitchRel = orient.beta - n.beta;          // + = tilted back
-      const fwdInput = clamp(-dz(pitchRel) / TILT_FULL, -0.4, 1); // tilt forward = accelerate
-      const clbInput = clamp(dz(pitchRel) / TILT_FULL, -1, 1);    // tilt back = climb, fwd = dive
+    /* ---------- hold buttons ---------- */
+    function bindHold(el, key) {
+      const release = () => {
+        if (!held[key]) return;
+        held[key] = false;
+        el.classList.remove("down");
+        refreshControls();
+        maybeSend(true);
+      };
+      el.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        // Keep receiving the release even if the thumb slides off the button.
+        try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+        held[key] = true;
+        el.classList.add("down");
+        refreshControls();
+        maybeSend(true);
+      });
+      el.addEventListener("pointerup", release);
+      el.addEventListener("pointercancel", release);
+      el.addEventListener("lostpointercapture", release);
+      el.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+    bindHold(els.boost, "boost");
+    bindHold(els.climb, "climb");
+    bindHold(els.dive, "dive");
 
-      heading = orient.alpha; // steer by rotating the phone (compass heading)
-
-      // weighted forward speed
-      const targetSpeed = fwdInput * MAX_SPEED;
-      speed += (targetSpeed - speed) * SPEED_LERP;
-
-      if (dt > 0) {
-        const hr = heading * Math.PI / 180;
-        const dNorth = Math.cos(hr) * speed * dt; // metres
-        const dEast = Math.sin(hr) * speed * dt;
-        pos.lat += dNorth / M_PER_DEG_LAT;
-        pos.lon += dEast / (M_PER_DEG_LAT * Math.cos(pos.lat * Math.PI / 180));
-        pos.alt = clamp(pos.alt + clbInput * MAX_CLIMB * dt, ALT_MIN, ALT_MAX);
+    // Leaving the page (app switch, screen off) parks the suit in a hover.
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        held.climb = held.dive = held.boost = false;
+        for (const el of [els.boost, els.climb, els.dive]) el.classList.remove("down");
+        if (neutral) tilt = { ...neutral };
+        refreshControls();
+        maybeSend(true);
+      } else if (active) {
+        keepAwake();
       }
+    });
 
-      // telemetry (stream the raw device orientation the task asks for)
-      const pitch = orient.beta, roll = orient.gamma, yaw = orient.alpha;
-      els.pitch.textContent = Math.round(pitch);
-      els.roll.textContent = Math.round(roll);
-      els.yaw.textContent = Math.round(yaw);
-      els.alt.textContent = pos.alt.toFixed(0);
-      els.spd.textContent = speed.toFixed(0);
-      els.barThr.style.width = Math.abs(fwdInput) * 50 + "%";
-      els.barThr.style.left = fwdInput >= 0 ? "50%" : (50 - Math.abs(fwdInput) * 50) + "%";
-      els.barClb.style.width = Math.abs(clbInput) * 50 + "%";
-      els.barClb.style.left = clbInput >= 0 ? "50%" : (50 - Math.abs(clbInput) * 50) + "%";
+    // Rotating the screen changes what "level" means: re-take neutral once it settles.
+    function onScreenTurn() {
+      if (!active) return;
+      setTimeout(() => {
+        calibrate();
+        setStatus("Neutral reset for the new screen orientation");
+      }, 400);
+    }
+    screen.orientation?.addEventListener?.("change", onScreenTurn);
+    window.addEventListener("orientationchange", onScreenTurn);
 
-      // stream to SpacetimeDB via update_orientation
-      if (conn && online) {
-        try {
-          conn.reducers.updateOrientation({
-            playerId: PLAYER_ID,
-            positionX: pos.lon,
-            positionY: pos.alt,
-            positionZ: pos.lat,
-            pitch, roll, yaw,
-            mode: MODE,
-          });
-        } catch (err) {
-          console.warn("[ig] update_orientation failed:", err?.message ?? err);
-        }
+    // Keep the screen awake while flying (no-op where unsupported).
+    async function keepAwake() {
+      try {
+        await navigator.wakeLock?.request("screen");
+      } catch {
+        /* denied or unsupported */
       }
+    }
+
+    /* ---------- UI (once per display frame, only on change) ---------- */
+    const shown = {};
+    function show(key, el, text) {
+      if (shown[key] === text) return;
+      shown[key] = text;
+      el.textContent = text;
+    }
+    function setBar(el, v) {
+      el.style.width = Math.abs(v) * 50 + "%";
+      el.style.left = v >= 0 ? "50%" : 50 - Math.abs(v) * 50 + "%";
+    }
+    function renderUi() {
+      const { forward, right } = userTilt();
+      // Attitude-indicator style: nose down lifts the horizon, right roll turns it left.
+      els.horizon.style.transform =
+        `rotate(${-clamp(right, -45, 45)}deg) translateY(${clamp(-forward * 0.8, -40, 40)}px)`;
+      const c = controls;
+      show("thr", els.thr, c.throttle === 0 ? "—" : `${Math.round(c.throttle * 100)}%`);
+      show("turn", els.turn, c.turn === 0 ? "—" : `${c.turn < 0 ? "L" : "R"} ${Math.round(Math.abs(c.turn) * 100)}`);
+      show("clb", els.clb, c.climb > 0 ? "▲" : c.climb < 0 ? "▼" : "—");
+      show("boost", els.boostOut, c.boost ? "ON" : "OFF");
+      const now = performance.now();
+      while (sentAt.length && now - sentAt[0] > 1000) sentAt.shift();
+      show("rate", els.rate, online ? `${sentAt.length}/s` : "—");
+      setBar(els.barThr, c.throttle);
+      setBar(els.barTurn, c.turn);
+      requestAnimationFrame(renderUi);
     }
 
     /* ---------- connection ---------- */
@@ -562,12 +745,18 @@
           .withDatabaseName(db)
           .onConnect((c) => {
             conn = c;
-            // Create our row at spawn, then start streaming.
-            c.reducers.joinGame({ playerId: PLAYER_ID, mode: MODE });
+            // Create (or reset) our row, then start sending controls.
+            c.reducers
+              .joinGame({ playerId: PLAYER_ID, mode: MODE })
+              ?.catch?.((err) => console.warn("[ig] join_game failed:", err?.message ?? err));
             online = true;
             setLink("online");
             setStatus("SUIT ONLINE · tilt to fly");
-            startStreaming();
+            lastSent = null;
+            maybeSend(true);
+            // Flushes rate-limited changes and keeps the heartbeat going when
+            // the phone is held still.
+            flushTimer ??= setInterval(() => maybeSend(), 50);
           })
           .onDisconnect(() => { online = false; setLink("offline"); setStatus("Link dropped."); })
           .onConnectError((_ctx, err) => {
@@ -582,12 +771,6 @@
         setStatus("Failed to link: " + (err?.message ?? err));
         console.error(err);
       }
-    }
-
-    function startStreaming() {
-      if (sendTimer) return;
-      lastTick = 0;
-      sendTimer = setInterval(tick, SEND_MS);
     }
 
     /* ---------- activation ---------- */
@@ -627,13 +810,21 @@
       els.activate.textContent = "SUIT ACTIVE";
       els.core.classList.add("hot");
       els.coreLabel.textContent = "ONLINE";
-      els.hint.textContent = "Tilt forward to thrust · back to climb · rotate to steer.";
+      els.pad.classList.add("on");
+      document.body.classList.add("active");
+      els.hint.textContent =
+        "Tilt forward to fly · back to brake · left/right to turn · hold ▲ ▼ to climb or dive.";
+      keepAwake();
+      requestAnimationFrame(renderUi);
 
       connect();
     }
 
     els.activate.addEventListener("click", activateSuit);
-    els.calibrate.addEventListener("click", calibrate);
+    els.calibrate.addEventListener("click", () => {
+      calibrate();
+      setStatus(neutral ? "Neutral set · tilt to fly" : "Tap ACTIVATE first");
+    });
 
     /* ---------- config panel ---------- */
     function openConfig() {
@@ -652,6 +843,7 @@
       if (active) {
         // reconnect with the new target
         online = false;
+        try { conn?.disconnect(); } catch { /* already closed */ }
         setStatus("Reconnecting to " + host + " …");
         connect();
       } else {

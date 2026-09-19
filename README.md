@@ -117,9 +117,29 @@ whenever the module schema changes.
 - **PULL UP** flashes when you drop below ~45m above ground.
 - Let go of all controls and the suit levitates in place.
 - When a second pilot (e.g. the judge on the phone controller) starts
-  streaming, their suit appears with amber thrusters, JARVIS announces them,
-  and a **POV ▸ JUDGE** button appears in the HUD — click it or press `V` to
-  follow their suit. If their feed stops for 3 s the camera returns to yours.
+  streaming, their suit appears beside yours with amber thrusters, JARVIS
+  announces them, and a **POV ▸ JUDGE** button appears in the HUD — click it
+  or press `V` to follow their suit. If their feed stops for 3 s the camera
+  returns to yours.
+
+### Phone controller (`phone-controller/index.html`)
+
+| Phone | Action |
+|---|---|
+| Tilt forward / back | Fly forward / brake and reverse |
+| Tilt left / right | Turn |
+| Hold ▲ / ▼ | Climb / dive |
+| Hold BOOST | Afterburner |
+| ⊕ CALIBRATE | Make the current grip "neutral" (also done on ACTIVATE) |
+
+The phone is only an input device: it sends its control inputs — quantized,
+only when they change (at most 10/s), plus a 1 Hz heartbeat — and the laptop
+flies the judge's suit with the same flight model as yours, so it stays smooth
+however sparse the updates are and obeys the campus perimeter and building
+collisions. The inputs travel through the existing `update_orientation`
+reducer with `mode = 'PHONE_CTRL'` (`pitch` = throttle, `roll` = turn,
+`yaw` = climb, `position_x` = boost). Rows that stream positions instead
+(e.g. another laptop) are dead-reckoned between updates.
 
 ## Performance & GPU
 

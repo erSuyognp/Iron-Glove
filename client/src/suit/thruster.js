@@ -45,5 +45,6 @@ export function initTrail(viewer, { cool: coolCss = '#22ccff', hot: hotCss = '#f
     destroy() {
       viewer.entities.remove(entity);
     },
+    entity,
   };
 }
