@@ -1,66 +1,74 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Iron Glove — Homewood</title>
-  <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #071018; font-family: ui-sans-serif, system-ui; }
-    #cesiumContainer { width: 100%; height: 100%; }
-    #hud {
-      position: fixed; left: 16px; top: 16px; color: #d7f6ff;
-      text-shadow: 0 2px 8px #000; pointer-events: none; z-index: 2;
-      font-family: 'Courier New', monospace;
-    }
-    #hud b { color: #7ee0ff; }
-    #jarvis-box {
-      position: fixed; left: 16px; bottom: 80px; max-width: 420px;
-      background: rgba(0,20,40,0.75); border: 1px solid #3af;
-      border-radius: 8px; padding: 10px 14px; color: #d7f6ff;
-      font-family: 'Courier New', monospace; font-size: 13px;
-      z-index: 2; pointer-events: none;
-    }
-    #jarvis-ticker { opacity: 0.9; }
-    #bar {
-      position: fixed; left: 16px; right: 16px; bottom: 16px;
-      display: flex; gap: 8px; z-index: 2; flex-wrap: wrap; align-items: center;
-    }
-    button {
-      background: #123; color: #d7f6ff; border: 1px solid #3af;
-      padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
-    }
-    #stdbStatus { color: #9ad; font-size: 13px; }
-  </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IRON GLOVE — Homewood</title>
+  <link rel="stylesheet" href="/src/hud/hud.css" />
 </head>
 <body>
+  <!-- CesiumJS renders here -->
   <div id="cesiumContainer"></div>
 
-  <div id="hud">
-    <div style="font-size:18px;font-weight:bold;letter-spacing:2px;margin-bottom:4px">IRON GLOVE</div>
-    <div style="color:#c8a020;letter-spacing:3px;font-size:11px;margin-bottom:12px">HOMEWOOD CAMPUS</div>
-    <div>ALT &nbsp;<b id="hud-alt">0</b> m</div>
-    <div>SPD &nbsp;<b id="hud-spd">0</b></div>
-    <div>PITCH <b id="hud-pitch">0</b></div>
-    <div>ROLL &nbsp;<b id="hud-roll">0</b></div>
-    <div>MODE &nbsp;<b id="hud-mode">KEYBOARD</b></div>
-    <div style="margin-top:8px">SUIT HP <b id="hud-hp" style="color:#ff8b8b">100</b></div>
-    <div style="opacity:.5;font-size:11px;margin-top:10px">
-      W thrust · S brake · Space climb · C down<br>
-      mouse-drag look · F repulsor
+  <!-- Speed effects: edge motion blur + vignette, intensity driven by velocity -->
+  <div id="speed-blur"></div>
+  <div id="speed-vignette"></div>
+
+  <!-- Boot / error banner -->
+  <div id="boot-banner" class="boot-banner hidden"></div>
+
+  <!-- ================= HUD OVERLAY ================= -->
+  <div id="hud" class="hud">
+    <!-- Top bar -->
+    <div class="hud-top">
+      <div class="hud-title">
+        <span class="hud-title-main">IRON GLOVE</span>
+        <span class="hud-title-sub">HOMEWOOD</span>
+      </div>
+      <div class="hud-suit">
+        <span class="hud-suit-label">SUIT</span>
+        <span id="hud-suit-hp" class="hud-suit-hp">100</span>
+        <div class="hud-bar"><div id="hud-suit-bar" class="hud-bar-fill"></div></div>
+      </div>
+    </div>
+
+    <!-- Left telemetry stack -->
+    <div class="hud-left">
+      <div class="stat"><span class="stat-k">ALT</span><span id="hud-alt" class="stat-v">0.0</span><span class="stat-u">m</span></div>
+      <div class="stat"><span class="stat-k">SPD</span><span id="hud-spd" class="stat-v">0.0</span><span class="stat-u">m/s</span></div>
+      <div class="stat"><span class="stat-k">PITCH</span><span id="hud-pitch" class="stat-v">0</span><span class="stat-u">°</span></div>
+      <div class="stat"><span class="stat-k">ROLL</span><span id="hud-roll" class="stat-v">0</span><span class="stat-u">°</span></div>
+      <div class="stat"><span class="stat-k">HDG</span><span id="hud-hdg" class="stat-v">0</span><span class="stat-u">°</span></div>
+      <div class="stat mode"><span class="stat-k">MODE</span><span id="hud-mode" class="stat-v">KEYBOARD</span></div>
+    </div>
+
+    <!-- Heading tape (scrolls with heading) -->
+    <div id="heading-tape" class="heading-tape"></div>
+
+    <!-- Center artificial horizon / pitch ladder / bank indicator -->
+    <div id="attitude" class="attitude"></div>
+
+    <!-- Ground proximity warning -->
+    <div id="gpws" class="gpws">PULL UP</div>
+
+    <!-- JARVIS ticker (wired for Phase 4, static for now) -->
+    <div class="hud-jarvis">
+      <span class="jarvis-label">JARVIS</span>
+      <span id="jarvis-ticker" class="jarvis-line">Suit online. Homewood airspace is clear, sir.</span>
+    </div>
+
+    <!-- Bottom help bar -->
+    <div class="hud-help">
+      <span class="key">W</span> thrust
+      <span class="key">S</span> brake
+      <span class="key">A</span>/<span class="key">D</span> yaw
+      <span class="key">↑</span>/<span class="key">↓</span> climb / dive
+      <span class="key">Q</span>/<span class="key">E</span> roll
+      <span class="key">Space</span> boost
+      <span class="key">R</span> reset
     </div>
   </div>
 
-  <div id="jarvis-box">
-    <div style="color:#7ee0ff;font-size:11px;letter-spacing:2px;margin-bottom:4px">J.A.R.V.I.S.</div>
-    <div id="jarvis-ticker">Systems nominal, sir.</div>
-  </div>
-
-  <div id="bar">
-    <button id="connectGlove">Connect Glove</button>
-    <button id="calibrate">Calibrate</button>
-    <button id="goOnline">Go Online</button>
-    <span id="stdbStatus">offline</span>
-  </div>
-
-  <script type="module" src="./src/main.js"></script>
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>

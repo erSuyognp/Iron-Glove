@@ -1,43 +1,45 @@
-import * as THREE from 'three';
+import * as Cesium from 'cesium';
 
-const PARTICLE_COUNT = 80;
+// Afterburner trail: a glowing polyline of the suit's recent positions that
+// widens and shifts from cyan toward hot orange as throttle climbs.
 
-export function createThrusterEmitter(scene, offsetY = -1.0) {
-  const geo = new THREE.BufferGeometry();
-  const positions = new Float32Array(PARTICLE_COUNT * 3);
-  const velocities = [];
+const MAX_POINTS = 45;
 
-  for (let i = 0; i < PARTICLE_COUNT; i++) {
-    velocities.push(new THREE.Vector3(
-      (Math.random() - 0.5) * 0.3,
-      -(Math.random() * 0.8 + 0.2),
-      (Math.random() - 0.5) * 0.3
-    ));
-  }
+export function initTrail(viewer) {
+  const points = [];
+  let width = 3;
+  const color = Cesium.Color.fromCssColorString('#22ccff').clone();
+  const cool = Cesium.Color.fromCssColorString('#22ccff');
+  const hot = Cesium.Color.fromCssColorString('#ff7a1a');
 
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const mat = new THREE.PointsMaterial({ color: 0xff6600, size: 0.18, transparent: true, opacity: 0.8 });
-  const emitter = new THREE.Points(geo, mat);
-  scene.add(emitter);
+  viewer.entities.add({
+    name: 'Afterburner trail',
+    polyline: {
+      positions: new Cesium.CallbackProperty(() => points, false),
+      width: new Cesium.CallbackProperty(() => width, false),
+      material: new Cesium.PolylineGlowMaterialProperty({
+        glowPower: 0.32,
+        taperPower: 0.4, // fade the tail to a point
+        color: new Cesium.CallbackProperty(() => color, false),
+      }),
+    },
+  });
 
   return {
-    update(suitPos, active) {
-      emitter.visible = active;
-      if (!active) return;
-      const pos = geo.attributes.position.array;
-      for (let i = 0; i < PARTICLE_COUNT; i++) {
-        const base = i * 3;
-        pos[base]     += velocities[i].x;
-        pos[base + 1] += velocities[i].y;
-        pos[base + 2] += velocities[i].z;
-        // reset particle near suit boot position when it drifts far
-        if (Math.abs(pos[base + 1] - suitPos.y) > 3) {
-          pos[base]     = suitPos.x + (Math.random() - 0.5) * 0.2;
-          pos[base + 1] = suitPos.y + offsetY;
-          pos[base + 2] = suitPos.z + (Math.random() - 0.5) * 0.2;
-        }
-      }
-      geo.attributes.position.needsUpdate = true;
-    }
+    // Append the current position; ratio 0..1 drives width + heat.
+    push(longitude, latitude, altitude, ratio) {
+      points.push(Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude));
+      if (points.length > MAX_POINTS) points.shift();
+      const r = Math.max(0, Math.min(1, ratio));
+      width = 3 + r * 13;
+      Cesium.Color.lerp(cool, hot, r, color);
+    },
+    // Let the tail shrink when nearly stopped, so it doesn't blob in place.
+    decay() {
+      if (points.length > 0) points.shift();
+    },
+    clear() {
+      points.length = 0;
+    },
   };
 }

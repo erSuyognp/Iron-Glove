@@ -1,0 +1,236 @@
+:root {
+  --iron-cyan: #00ccff;
+  --iron-cyan-dim: #00ccff88;
+  --iron-gold: #c8a020;
+  --iron-red: #ff3b30;
+  --iron-bg: #0a0e1a;
+  --hud-glow: 0 0 8px var(--iron-cyan-dim);
+  --hud-font: 'Courier New', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--iron-bg);
+}
+
+#cesiumContainer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Hide Cesium's default widget clutter */
+.cesium-widget-credits,
+.cesium-viewer-bottom { display: none !important; }
+
+/* ---------------- Speed effects ---------------- */
+/* Both sit above the canvas but below the HUD, and never eat pointer events. */
+#speed-blur,
+#speed-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+/* Edge motion blur: blurs the canvas behind it, masked so the center stays
+   sharp. The blur radius is driven from JS via backdrop-filter. */
+#speed-blur {
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+  -webkit-mask-image: radial-gradient(ellipse 62% 62% at 50% 50%, transparent 42%, #000 88%);
+  mask-image: radial-gradient(ellipse 62% 62% at 50% 50%, transparent 42%, #000 88%);
+  will-change: backdrop-filter;
+}
+/* Darkening tunnel vignette that fades in with speed. */
+#speed-vignette {
+  opacity: 0;
+  background: radial-gradient(ellipse 70% 70% at 50% 50%, transparent 45%, rgba(2, 8, 20, 0.6) 100%);
+  transition: opacity 0.12s linear;
+}
+
+/* ---------------- Boot / error banner ---------------- */
+.boot-banner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 30;
+  max-width: 520px;
+  padding: 24px 28px;
+  background: rgba(10, 14, 26, 0.92);
+  border: 1px solid var(--iron-cyan);
+  border-radius: 10px;
+  color: var(--iron-cyan);
+  font-family: var(--hud-font);
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: center;
+  box-shadow: 0 0 40px #00ccff33;
+}
+.boot-banner.error { border-color: var(--iron-red); color: #ffd7d4; box-shadow: 0 0 40px #ff3b3033; }
+.boot-banner code { color: var(--iron-gold); }
+.boot-banner.hidden { display: none; }
+
+/* ---------------- HUD ---------------- */
+.hud {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  font-family: var(--hud-font);
+  color: var(--iron-cyan);
+  text-shadow: var(--hud-glow);
+}
+
+/* Top bar */
+.hud-top {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 18px 24px;
+}
+.hud-title-main {
+  font-size: 22px;
+  font-weight: bold;
+  letter-spacing: 6px;
+}
+.hud-title-sub {
+  display: block;
+  color: var(--iron-gold);
+  font-size: 11px;
+  letter-spacing: 8px;
+  margin-top: 2px;
+}
+.hud-suit { text-align: right; }
+.hud-suit-label { font-size: 11px; letter-spacing: 3px; opacity: 0.8; }
+.hud-suit-hp { font-size: 26px; font-weight: bold; margin-left: 8px; }
+.hud-bar {
+  width: 160px;
+  height: 8px;
+  margin-top: 6px;
+  border: 1px solid var(--iron-cyan-dim);
+  background: #00121a;
+}
+.hud-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, var(--iron-cyan), #7fe9ff);
+  box-shadow: var(--hud-glow);
+  transition: width 0.3s ease;
+}
+
+/* Left telemetry */
+.hud-left {
+  position: absolute;
+  top: 50%;
+  left: 24px;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.stat {
+  display: grid;
+  grid-template-columns: 54px 64px auto;
+  align-items: baseline;
+  gap: 6px;
+}
+.stat-k { font-size: 11px; letter-spacing: 2px; opacity: 0.8; }
+.stat-v { font-size: 22px; font-weight: bold; text-align: right; }
+.stat-u { font-size: 10px; opacity: 0.6; }
+.stat.mode .stat-v { font-size: 16px; color: var(--iron-gold); text-align: left; }
+
+/* Artificial horizon / pitch ladder */
+.attitude {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 340px; height: 340px;
+  transform: translate(-50%, -50%);
+  opacity: 0.9;
+  filter: drop-shadow(0 0 3px var(--iron-cyan-dim));
+}
+
+/* Heading tape */
+.heading-tape {
+  position: absolute;
+  top: 70px; left: 50%;
+  width: 340px; height: 48px;
+  transform: translateX(-50%);
+  filter: drop-shadow(0 0 3px var(--iron-cyan-dim));
+}
+
+/* Ground proximity warning */
+.gpws {
+  position: absolute;
+  top: 30%; left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 22px;
+  border: 2px solid var(--iron-red);
+  border-radius: 4px;
+  color: var(--iron-red);
+  font-size: 22px;
+  font-weight: bold;
+  letter-spacing: 6px;
+  text-shadow: 0 0 10px var(--iron-red);
+  opacity: 0;
+  visibility: hidden;
+}
+.gpws.active {
+  visibility: visible;
+  animation: gpws-blink 0.5s steps(1) infinite;
+}
+@keyframes gpws-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.15; }
+}
+
+/* JARVIS ticker */
+.hud-jarvis {
+  position: absolute;
+  bottom: 64px; left: 50%;
+  transform: translateX(-50%);
+  max-width: 60%;
+  padding: 10px 18px;
+  background: rgba(10, 14, 26, 0.55);
+  border: 1px solid var(--iron-cyan-dim);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.jarvis-label {
+  font-size: 10px;
+  letter-spacing: 3px;
+  color: var(--iron-gold);
+  border-right: 1px solid var(--iron-cyan-dim);
+  padding-right: 12px;
+}
+.jarvis-line { font-size: 13px; font-style: italic; }
+
+/* Bottom help */
+.hud-help {
+  position: absolute;
+  bottom: 16px; left: 0; right: 0;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 1px;
+  opacity: 0.7;
+}
+.key {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  margin: 0 2px;
+  border: 1px solid var(--iron-cyan-dim);
+  border-radius: 3px;
+  font-size: 10px;
+}

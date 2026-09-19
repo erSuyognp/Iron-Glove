@@ -1,165 +1,379 @@
-// Entry point — wires all modules together.
-// Phase 1: keyboard + Three.js blockout + HUD
-// Phase 2: SpacetimeDB multiplayer
-// Phase 3: glove input + GLTF suit
-// Phase 4: Grok JARVIS
-// Phase 5: sentinels + particles
+import * as Cesium from 'cesium';
+import { initWorld, hasValidToken, JHU_HOMEWOOD } from './cesium/world.js';
+import { updateChaseCamera } from './cesium/camera.js';
+import { initKeyboard, readAxes } from './input/keyboard.js';
+import { initHUD, updateHUD, setJarvis, setGpws, showBanner, hideBanner, updateSpeedFx } from './hud/hud.js';
+import { initAttitude, updateAttitude } from './hud/attitude.js';
+import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
+import { initTrail } from './suit/thruster.js';
 
-import * as THREE from 'three';
-import { initKeyboard, getKeyboardControl } from './input/keyboard.js';
-import { connectGlove, setGloveHandler } from './input/glove.js';
-import { loadSuit } from './suit/player.js';
-import { updateSuitPhysics, orientationToVelocity } from './suit/physics.js';
-import { createThrusterEmitter } from './suit/thruster.js';
-import { updateHUD } from './hud/hud.js';
-import { createSentinel } from './sentinel/sentinel.js';
-import { jarvisComment, GAME_EVENTS } from './grok/jarvis.js';
-import { scanCampusThreats, setThreatHandler } from './grok/threats.js';
-import { createIronGloveStdb } from './spacetimedb/client.js';
+// ---- Flight tuning ----
+const MAX_SPEED = 60; // m/s forward
+const BOOST_MULT = 2.2; // Space multiplies target speed
+const YAW_RATE = 55; // deg/s
+const ROLL_RATE = 160; // deg/s for manual barrel rolls (Q/E)
+const CLIMB_RATE = 40; // m/s vertical
+// Idle hover: a gentle levitation bob + attitude sway when the suit is still.
+const HOVER_AMP = 1.3; // meters of vertical float
+const HOVER_OMEGA = 2.1; // rad/s (period ~3s)
+const HOVER_SWAY_ROLL = 2.2; // degrees of idle roll sway
+const HOVER_SWAY_PITCH = 1.6; // degrees of idle pitch sway
+const HOVER_IDLE_SPEED = 1.5; // treat as "still" below this speed
+// Camera field of view: base, plus a punch that opens up at speed.
+const BASE_FOV_DEG = 60;
+const SPEED_FOV_DEG = 16; // extra FOV at full speed
+// Speed at which effects (blur / vignette / FOV) reach full intensity.
+const FX_FULL_SPEED = MAX_SPEED * 1.6;
+const MIN_ALT = 30; // safety floor (only used if the mesh can't be sampled)
+const MAX_ALT = 900;
+// The suit has weight — speed eases toward its target instead of snapping.
+// Same 0.08 feel as the glove spring-damper; do not crank this up.
+const SPEED_LERP = 0.08;
+const ANGLE_LERP = 0.1; // how fast visual pitch/roll settle
 
-// ── Scene ──────────────────────────────────────────────────────────────
-const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x87b8d8, 80, 420);
-scene.background = new THREE.Color(0x87b8d8);
+// ---- Collision / damage tuning ----
+const GROUND_CLEARANCE = 4; // how far the suit floats above a surface at rest
+const SUIT_RADIUS = 4; // meters, for the forward obstacle ray
+const IMPACT_COOLDOWN_MS = 700; // min gap between damage ticks
+const REBOOT_MS = 1800; // downtime after health hits 0
+const SCRAPE_SPEED = 12; // below this, touching ground doesn't hurt
+const DAMAGE_SCALE = 0.55; // m/s -> HP
+const DAMAGE_MIN = 6;
+const DAMAGE_MAX = 45;
+const GPWS_ALT = 45; // AGL below which the "PULL UP" warning flashes
 
-const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 2000);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-document.getElementById('cesiumContainer')?.appendChild(renderer.domElement)
-  || document.body.appendChild(renderer.domElement);
-
-scene.add(new THREE.HemisphereLight(0xcfe9ff, 0x334422, 1.1));
-const sun = new THREE.DirectionalLight(0xfff2d0, 1.2);
-sun.position.set(40, 80, 20);
-scene.add(sun);
-
-// ── Suit ───────────────────────────────────────────────────────────────
-const suit = await loadSuit(scene);
-const thruster = createThrusterEmitter(scene);
-
-// ── Sentinels ──────────────────────────────────────────────────────────
-const sentinels = [createSentinel(scene, 0)];
-
-// ── State ──────────────────────────────────────────────────────────────
-const state = {
-  pos: new THREE.Vector3(0, 8, 30),
-  vel: new THREE.Vector3(),
-  pitch: 0, roll: 0,
-  p0: 0, r0: 0,
-  mode: 'KEYBOARD',
-  hp: 100,
-  poseAcc: 0,
+const JARVIS_LINES = {
+  online: 'Suit online. Homewood airspace is clear, sir.',
+  minor: [
+    'Structural contact. The architecture is not the enemy, sir.',
+    'That was a building. They rarely move.',
+    'Minor impact. The suit can take it — barely.',
+  ],
+  major: [
+    'Heavy impact! Integrity dropping fast.',
+    'We really cannot keep hitting things, sir.',
+    'Warning: sustained collision damage.',
+  ],
+  reboot: 'Suit integrity depleted. Emergency reboot in progress, sir.',
+  restored: 'Systems restored. Back in Homewood airspace, sir.',
 };
 
-const look = { x: 0, y: 0 };
-window.addEventListener('mousemove', (e) => {
-  if (e.buttons === 1) {
-    look.y -= e.movementX * 0.005;
-    look.x -= e.movementY * 0.005;
-    look.x = Math.max(-1.1, Math.min(0.35, look.x));
-  }
-});
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
 
-initKeyboard();
-
-setGloveHandler((d) => {
-  state.pitch = d.pitch;
-  state.roll  = d.roll;
-  state.mode  = 'GLOVE';
-});
-
-// ── SpacetimeDB ────────────────────────────────────────────────────────
-const stdb = createIronGloveStdb({
-  host: import.meta.env.VITE_SPACETIMEDB_HOST ?? 'wss://maincloud.spacetimedb.com',
-  dbName: 'iron-glove-suyog',
-});
-stdb.onStatus((msg) => {
-  const el = document.getElementById('stdbStatus');
-  if (el) el.textContent = msg;
-});
-
-// ── JARVIS ─────────────────────────────────────────────────────────────
-let lastJarvis = '';
-setThreatHandler((line) => { lastJarvis = line; });
-
-// ── Game loop ──────────────────────────────────────────────────────────
-function gloveControl() {
-  const p = state.pitch - state.p0;
-  const r = state.roll  - state.r0;
+// ---- Suit state ----
+function spawnState() {
   return {
-    up:     p < -18 ? Math.min(1, (-p - 18) / 25) : p > 18 ? -0.5 : 0,
-    thrust: r >  16 ? Math.min(1, (r  - 16) / 25) : 0,
-    brake:  r < -16 ? Math.min(1, (-r - 16) / 25) : 0,
+    longitude: JHU_HOMEWOOD.longitude,
+    latitude: JHU_HOMEWOOD.latitude,
+    altitude: JHU_HOMEWOOD.altitude,
+    heading: 0, // degrees, 0 = north
+    speed: 0, // m/s (current, eased)
+    pitch: 0, // degrees (visual)
+    roll: 0, // degrees — manual barrel roll (Q/E), drives the camera
+    bank: 0, // degrees — auto-lean into turns, mesh only
+    hover: 0, // meters — idle levitation offset (visual only)
+    health: 100,
+    mode: 'KEYBOARD',
   };
 }
 
-function tick(dt) {
-  const c = state.mode === 'GLOVE' ? gloveControl() : getKeyboardControl();
-  const yaw = look.y;
-  const fwd = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+let suit = spawnState();
 
-  state.vel.addScaledVector(fwd, c.thrust * 28 * dt);
-  state.vel.multiplyScalar(1 - c.brake * 1.8 * dt);
-  state.vel.y += (c.up * 22 - 8) * dt;
-  state.vel.multiplyScalar(0.985);
-  state.pos.addScaledVector(state.vel, dt);
-  state.pos.y = Math.max(2, Math.min(80, state.pos.y));
+// Collision / crash bookkeeping.
+let lastSurface; // last sampled surface height under the suit
+let damageCooldownUntil = 0;
+let crashedUntil = 0; // > now while rebooting after a fatal crash
+let lastForwardCheck = 0;
+let lastSurfaceSampleAt = 0; // throttle GPU height reads
+let trailClearNeeded = false; // flush the afterburner trail after a teleport
+let idle = false; // suit is still enough to levitate
+let hoverBlend = 0; // 0..1 ease for the idle hover
+let hoverClock = 0; // seconds, advances the hover sine
 
-  updateSuitPhysics(suit, state.pos, state.pos.clone(), state.vel);
-  suit.position.copy(state.pos);
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
 
-  camera.position.copy(state.pos)
-    .add(new THREE.Vector3(0, 2.2, 8).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw));
-  camera.lookAt(state.pos.x, state.pos.y + 1, state.pos.z);
+// Framerate-independent smoothing: a per-frame lerp factor tuned at 60fps is
+// remapped for the actual dt, so the feel is identical at 30 or 120 fps.
+function smooth(current, target, factor60, dt) {
+  const t = 1 - Math.pow(1 - factor60, dt * 60);
+  return current + (target - current) * t;
+}
 
-  const thrusting = c.thrust > 0.1;
-  thruster.update(state.pos, thrusting);
+// Normalize an angle in degrees to (-180, 180].
+function normalizeDeg(a) {
+  return ((((a + 180) % 360) + 360) % 360) - 180;
+}
 
-  sentinels.forEach((s) => s.update(dt, state.pos));
+function stepFlight(dt) {
+  const axes = readAxes();
 
-  if (stdb.connected) {
-    state.poseAcc += dt;
-    if (state.poseAcc >= 0.1) {
-      state.poseAcc = 0;
-      stdb.updatePose(state.pos.x, state.pos.y, state.pos.z, yaw, thrusting);
+  if (axes.reset) {
+    suit = spawnState();
+    trailClearNeeded = true;
+    return;
+  }
+
+  // Target forward speed from throttle (+ optional boost).
+  const targetSpeed = axes.throttle * MAX_SPEED * (axes.boost ? BOOST_MULT : 1);
+  suit.speed = smooth(suit.speed, targetSpeed, SPEED_LERP, dt);
+
+  // Yaw turns the suit; scale by dt so it's framerate-independent.
+  suit.heading = (suit.heading + axes.yaw * YAW_RATE * dt + 360) % 360;
+
+  // Climb / dive.
+  suit.altitude += axes.climb * CLIMB_RATE * dt;
+  suit.altitude = Math.min(MAX_ALT, Math.max(MIN_ALT, suit.altitude));
+
+  // Advance position along heading over the ground.
+  const dist = suit.speed * dt; // meters this frame
+  const headingRad = Cesium.Math.toRadians(suit.heading);
+  const dNorth = Math.cos(headingRad) * dist;
+  const dEast = Math.sin(headingRad) * dist;
+  const latRad = Cesium.Math.toRadians(suit.latitude);
+  suit.latitude += dNorth / 111320;
+  suit.longitude += dEast / (111320 * Math.cos(latRad));
+
+  // Pitch: nose up/down with climb input.
+  suit.pitch = smooth(suit.pitch, axes.climb * 18, ANGLE_LERP, dt);
+
+  // Manual barrel roll (Q/E): rotate continuously while held (can go inverted
+  // or all the way around), then auto-level back to upright when released.
+  if (axes.roll !== 0) {
+    suit.roll = normalizeDeg(suit.roll + axes.roll * ROLL_RATE * dt);
+  } else {
+    suit.roll = smooth(normalizeDeg(suit.roll), 0, ANGLE_LERP, dt);
+  }
+
+  // Auto-bank: lean into turns (mesh only, so the camera isn't yanked sideways).
+  suit.bank = smooth(suit.bank, -axes.yaw * 28, ANGLE_LERP, dt);
+
+  // "Still" = no control input and barely moving, so the suit can levitate.
+  idle =
+    axes.throttle === 0 &&
+    axes.yaw === 0 &&
+    axes.climb === 0 &&
+    axes.roll === 0 &&
+    !axes.boost &&
+    Math.abs(suit.speed) < HOVER_IDLE_SPEED;
+}
+
+// Apply impact damage; returns true if damage actually landed (not on cooldown).
+function registerImpact(impactSpeed) {
+  const now = performance.now();
+  if (now < damageCooldownUntil) return false;
+  damageCooldownUntil = now + IMPACT_COOLDOWN_MS;
+
+  const dmg = Math.min(DAMAGE_MAX, Math.max(DAMAGE_MIN, Math.abs(impactSpeed) * DAMAGE_SCALE));
+  suit.health = Math.max(0, suit.health - dmg);
+
+  if (suit.health <= 0) {
+    crashedUntil = now + REBOOT_MS;
+    setJarvis(JARVIS_LINES.reboot);
+  } else {
+    setJarvis(pick(dmg >= 22 ? JARVIS_LINES.major : JARVIS_LINES.minor));
+  }
+  return true;
+}
+
+function collisionStep(viewer, suitEntity) {
+  const exclude = [suitEntity];
+  const now = performance.now();
+
+  // 1) Dynamic floor: don't sink into the ground or a roof beneath us.
+  // Sampling the mesh is a GPU read-back that stalls the frame, so refresh the
+  // surface height ~20x/sec and reuse it in between — the floor still clamps
+  // every frame against the cached value.
+  if (now - lastSurfaceSampleAt > 50) {
+    lastSurfaceSampleAt = now;
+    const s = sampleSurfaceHeight(viewer, suit.longitude, suit.latitude, exclude);
+    if (s !== undefined) lastSurface = s;
+  }
+  if (lastSurface !== undefined) {
+    const floor = lastSurface + GROUND_CLEARANCE;
+    if (suit.altitude < floor) {
+      const penetration = floor - suit.altitude;
+      // Hard landing / fast scrape hurts; a gentle settle doesn't.
+      if (Math.abs(suit.speed) > SCRAPE_SPEED || penetration > 3) {
+        registerImpact(Math.abs(suit.speed) + penetration * 6);
+      }
+      suit.altitude = floor;
+      suit.speed *= 0.5; // bleed momentum on contact
     }
   }
 
-  scanCampusThreats();
-
-  updateHUD({
-    altitude: state.pos.y,
-    speed: state.vel.length(),
-    pitch: state.pitch,
-    roll: state.roll,
-    mode: state.mode,
-    suitHealth: state.hp,
-  }, lastJarvis);
+  // 2) Forward wall: catch flying into the side of a building (throttled).
+  if (now - lastForwardCheck > 100) {
+    lastForwardCheck = now;
+    const lookAhead = Math.max(8, Math.abs(suit.speed) * 0.2 + SUIT_RADIUS);
+    const obstacle = forwardObstacle(viewer, suit, lookAhead, exclude);
+    if (obstacle && Math.abs(suit.speed) > 6) {
+      if (registerImpact(Math.abs(suit.speed))) {
+        // Bounce back off the wall.
+        suit.speed = -Math.abs(suit.speed) * 0.2;
+        const headingRad = Cesium.Math.toRadians(suit.heading);
+        const latRad = Cesium.Math.toRadians(suit.latitude);
+        suit.latitude -= (Math.cos(headingRad) * 3) / 111320;
+        suit.longitude -= (Math.sin(headingRad) * 3) / (111320 * Math.cos(latRad));
+      }
+    }
+  }
 }
 
-let last = performance.now();
-function loop(now) {
-  tick((now - last) / 1000);
-  last = now;
-  renderer.render(scene, camera);
-  requestAnimationFrame(loop);
+function makeSuitEntity(viewer) {
+  return viewer.entities.add({
+    name: 'IRON GLOVE — Player 1',
+    position: Cesium.Cartesian3.fromDegrees(suit.longitude, suit.latitude, suit.altitude),
+    // Placeholder body until the GLTF suit lands in Phase 3.
+    box: {
+      dimensions: new Cesium.Cartesian3(6, 10, 3),
+      material: Cesium.Color.fromCssColorString('#00ccff').withAlpha(0.9),
+      outline: true,
+      outlineColor: Cesium.Color.fromCssColorString('#7fe9ff'),
+    },
+    // A small "thruster" trail marker under the suit.
+    point: {
+      pixelSize: 8,
+      color: Cesium.Color.fromCssColorString('#ffb020'),
+    },
+  });
 }
-requestAnimationFrame(loop);
 
-window.addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
+function updateSuitEntity(entity) {
+  entity.position = Cesium.Cartesian3.fromDegrees(
+    suit.longitude,
+    suit.latitude,
+    suit.altitude + suit.hover,
+  );
+  // Idle sway: a slow roll/pitch wobble, as if thrusters are holding a hover.
+  const swayRoll = Math.sin(hoverClock * 1.3) * HOVER_SWAY_ROLL * hoverBlend;
+  const swayPitch = Math.sin(hoverClock * 1.7 + 1.0) * HOVER_SWAY_PITCH * hoverBlend;
+  const hpr = new Cesium.HeadingPitchRoll(
+    Cesium.Math.toRadians(suit.heading),
+    Cesium.Math.toRadians(suit.pitch + swayPitch),
+    Cesium.Math.toRadians(suit.roll + suit.bank + swayRoll),
+  );
+  entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
+    entity.position.getValue(Cesium.JulianDate.now()),
+    hpr,
+  );
+}
 
-// ── UI buttons ─────────────────────────────────────────────────────────
-document.getElementById('connectGlove')?.addEventListener('click', () => connectGlove());
-document.getElementById('calibrate')?.addEventListener('click', () => {
-  state.p0 = state.pitch;
-  state.r0 = state.roll;
-});
-document.getElementById('goOnline')?.addEventListener('click', () => {
-  const name = prompt('Pilot name', 'Suyog') || 'Suyog';
-  stdb.connect(name);
-});
+async function boot() {
+  initHUD();
+  initAttitude();
+  initKeyboard();
+
+  if (!hasValidToken()) {
+    showBanner(
+      `<b>Cesium Ion token required.</b><br><br>` +
+        `Paste your token into <code>client/.env</code>:<br>` +
+        `<code>VITE_CESIUM_TOKEN=&lt;your token&gt;</code><br><br>` +
+        `Get a free token at <code>ion.cesium.com/tokens</code>, then restart the dev server.`,
+      true,
+    );
+    return;
+  }
+
+  let viewer;
+  try {
+    viewer = await initWorld();
+  } catch (err) {
+    console.error(err);
+    showBanner(
+      `<b>Failed to load the world.</b><br><br>` +
+        `This usually means the Cesium token is invalid or lacks 3D Tiles access.<br>` +
+        `<code>${String(err.message || err)}</code>`,
+      true,
+    );
+    return;
+  }
+
+  hideBanner();
+
+  const suitEntity = makeSuitEntity(viewer);
+  const trail = initTrail(viewer);
+  updateChaseCamera(viewer, suit);
+
+  // Game loop.
+  let last = performance.now();
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.1) dt = 0.1; // clamp after tab-out
+
+    let rebooting = false;
+    if (crashedUntil) {
+      // Rebooting after a fatal crash — controls frozen until systems restore.
+      rebooting = true;
+      if (now >= crashedUntil) {
+        suit = spawnState();
+        crashedUntil = 0;
+        lastSurface = undefined;
+        trailClearNeeded = true;
+        setJarvis(JARVIS_LINES.restored);
+        rebooting = false;
+      }
+    } else {
+      stepFlight(dt);
+      collisionStep(viewer, suitEntity);
+    }
+
+    if (trailClearNeeded) {
+      trail.clear();
+      trailClearNeeded = false;
+    }
+
+    // Idle levitation: ease the bob in when still, out when flying/rebooting.
+    hoverClock += dt;
+    hoverBlend = smooth(hoverBlend, idle && !rebooting ? 1 : 0, 0.05, dt);
+    suit.hover = Math.sin(hoverClock * HOVER_OMEGA) * HOVER_AMP * hoverBlend;
+
+    updateSuitEntity(suitEntity);
+    updateChaseCamera(viewer, suit);
+
+    // Speed-driven feel: FOV punch, edge blur, and vignette all ramp together.
+    const speedRatio = Math.min(1, Math.abs(suit.speed) / FX_FULL_SPEED);
+    if (viewer.camera.frustum.fov !== undefined) {
+      viewer.camera.frustum.fov = Cesium.Math.toRadians(
+        BASE_FOV_DEG + speedRatio * SPEED_FOV_DEG,
+      );
+    }
+    updateSpeedFx(speedRatio);
+
+    // Afterburner trail: extend it while flying, let it drain when parked.
+    if (!rebooting && Math.abs(suit.speed) > 2) {
+      trail.push(suit.longitude, suit.latitude, suit.altitude, speedRatio);
+    } else {
+      trail.decay();
+    }
+
+    // Show height above the ground/rooftops (AGL) when we know the surface.
+    const agl =
+      lastSurface !== undefined ? Math.max(0, suit.altitude - lastSurface) : suit.altitude;
+
+    // Animated attitude indicator + heading tape.
+    updateAttitude(suit.pitch, suit.roll + suit.bank, suit.heading);
+
+    // Ground proximity warning: flash when low and not mid-reboot.
+    setGpws(!rebooting && agl < GPWS_ALT);
+
+    updateHUD({
+      altitude: agl,
+      speed: Math.abs(suit.speed),
+      pitch: suit.pitch,
+      roll: suit.roll,
+      heading: suit.heading,
+      mode: suit.mode,
+      health: suit.health,
+    });
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+boot();

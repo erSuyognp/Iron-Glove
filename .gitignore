@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+client/.env
+client/.env.local
+
+# Build output
+dist/
+client/dist/
+*.local
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
