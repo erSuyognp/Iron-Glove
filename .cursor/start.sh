@@ -15,7 +15,9 @@ if is_up; then
   echo "==> SpacetimeDB already running on :3000"
 else
   echo "==> Starting SpacetimeDB daemon (logs: $LOG)"
-  setsid bash -c 'exec spacetime start' >"$LOG" 2>&1 &
+  # Detach fully (new session, no controlling tty, closed stdin) so the daemon
+  # survives after this start script returns.
+  nohup setsid bash -c 'exec spacetime start' </dev/null >"$LOG" 2>&1 &
   for _ in $(seq 1 60); do
     if is_up; then break; fi
     sleep 1
