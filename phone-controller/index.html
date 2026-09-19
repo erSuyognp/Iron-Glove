@@ -23,10 +23,13 @@
          reducer with player_id 'judge' and mode 'PHONE_CTRL'.
       3. Streams the judge's CONTROL INPUTS — not positions — through the
          update_orientation reducer:
-           tilt forward / back   -> throttle (fly forward / brake + reverse)
+         The phone is the suit: however you tip it, the suit tips.
+           tilt forward          -> fly forward
+           tilt further forward  -> nose dive (head down, fast)
+           tilt back             -> climb
            tilt left / right     -> turn
-           hold ▲ / ▼            -> climb / dive
            hold BOOST            -> afterburner
+           tap FIRE              -> missile, once the laptop shows LOCKED
 
     The phone is only an input device. The laptop flies the judge's suit with
     the same flight model as the host's suit, at full frame rate, so motion is
@@ -37,7 +40,7 @@
 
     Wire format (update_orientation fields, mode = 'PHONE_CTRL'):
       pitch = throttle (-1..1, + = forward)   roll = turn (-1..1, + = right)
-      yaw   = climb    (-1..1, + = up)        position_x = boost (0 | 1)
+      yaw   = climb    (-1..1, + = up, - = nose dive)   position_x = boost (0 | 1)
       position_y = FIRE presses so far (a counter; the laptop runs the judge's
                    autolock and launches a missile each time it rises)
     The laptop decodes the same layout in client/src/main.js.
@@ -253,7 +256,7 @@
       margin-top: 14px;
       display: none;
       grid-template-columns: 1fr 1fr;
-      grid-template-rows: 1fr 1fr auto;
+      grid-template-rows: auto;
       gap: 10px;
     }
     .pad.on { display: grid; }
@@ -278,8 +281,8 @@
       box-shadow: 0 0 22px rgba(55,231,255,0.45);
       transform: scale(0.98);
     }
+    .hold { min-height: 110px; }
     .hold.boost {
-      grid-row: 1 / span 2;
       color: var(--gold);
       border-color: rgba(245,184,61,0.7);
       background: linear-gradient(180deg, rgba(245,184,61,0.12), rgba(245,184,61,0.02));
@@ -287,8 +290,6 @@
     .hold.boost.down { background: rgba(245,184,61,0.3); box-shadow: 0 0 24px rgba(245,184,61,0.5); }
     /* FIRE: a tap, not a hold. Launches a missile once the laptop shows LOCKED. */
     .hold.fire {
-      grid-column: 1 / span 2;
-      min-height: 74px;
       font-size: 20px;
       letter-spacing: 8px;
       color: #ff5a4e;
@@ -343,8 +344,6 @@
 
   <div class="pad" id="pad">
     <button class="hold boost" id="btn-boost">BOOST</button>
-    <button class="hold" id="btn-climb">▲ CLIMB</button>
-    <button class="hold" id="btn-dive">▼ DIVE</button>
     <button class="hold fire" id="btn-fire">FIRE</button>
   </div>
 
@@ -416,7 +415,7 @@
     // Tilt feel.
     const TILT_DEADZONE = 5;   // deg of tilt ignored around neutral
     const TILT_FULL = 28;      // deg of tilt for full input
-    const REVERSE_MAX = 0.6;   // tilting back brakes, then reverses at up to 60%
+    const DIVE_FULL = 52;      // deg of forward tilt for a full nose dive (it starts at TILT_FULL)
     const TILT_SMOOTH_MS = 90; // low-pass on the raw sensor (hand tremor, sensor noise)
 
     // Sending: controls are quantized so a steady hand doesn't resend, sent at
@@ -506,7 +505,7 @@
     const els = {
       activate: $("activate"), status: $("status"), hint: $("hint"),
       core: $("core"), coreLabel: $("core-label"), horizon: $("horizon"),
-      pad: $("pad"), boost: $("btn-boost"), climb: $("btn-climb"), dive: $("btn-dive"), fire: $("btn-fire"),
+      pad: $("pad"), boost: $("btn-boost"), fire: $("btn-fire"),
       thr: $("t-thr"), turn: $("t-turn"), clb: $("t-clb"), rate: $("t-rate"), boostOut: $("t-boost"),
       barThr: $("bar-thr"), barTurn: $("bar-turn"),
       calibrate: $("calibrate"), openConfig: $("open-config"),
@@ -581,7 +580,7 @@
     }
 
     /* ---------- controls ---------- */
-    const held = { climb: false, dive: false, boost: false };
+    const held = { boost: false };
     let controls = { throttle: 0, turn: 0, climb: 0, boost: 0 };
     let shots = 0; // FIRE presses this session
 
@@ -604,10 +603,15 @@
 
     function refreshControls() {
       const { forward, right } = userTilt();
+      // The phone is the suit. Tipped forward it flies; tipped past full
+      // throttle it noses over into a dive (negative climb); tipped back it
+      // climbs. Level is a hover: the suit's own weight eases it to a stop.
+      const dive = clamp((forward - TILT_FULL) / (DIVE_FULL - TILT_FULL), 0, 1);
+      const climb = forward < 0 ? -axis(forward) : -dive;
       controls = {
-        throttle: settle(axis(forward, -REVERSE_MAX), controls.throttle),
+        throttle: settle(axis(forward, 0), controls.throttle),
         turn: settle(axis(right), controls.turn),
-        climb: (held.climb ? 1 : 0) - (held.dive ? 1 : 0),
+        climb: settle(climb, controls.climb),
         boost: held.boost ? 1 : 0,
       };
     }
@@ -675,8 +679,6 @@
       el.addEventListener("contextmenu", (e) => e.preventDefault());
     }
     bindHold(els.boost, "boost");
-    bindHold(els.climb, "climb");
-    bindHold(els.dive, "dive");
 
     // FIRE is a tap: each press bumps the counter and goes out at once. The
     // laptop runs the judge's autolock and launches when it sees the count
@@ -696,8 +698,8 @@
     // Leaving the page (app switch, screen off) parks the suit in a hover.
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
-        held.climb = held.dive = held.boost = false;
-        for (const el of [els.boost, els.climb, els.dive]) el.classList.remove("down");
+        held.boost = false;
+        els.boost.classList.remove("down");
         if (neutral) tilt = { ...neutral };
         refreshControls();
         maybeSend(true);
@@ -745,7 +747,7 @@
       const c = controls;
       show("thr", els.thr, c.throttle === 0 ? "—" : `${Math.round(c.throttle * 100)}%`);
       show("turn", els.turn, c.turn === 0 ? "—" : `${c.turn < 0 ? "L" : "R"} ${Math.round(Math.abs(c.turn) * 100)}`);
-      show("clb", els.clb, c.climb > 0 ? "▲" : c.climb < 0 ? "▼" : "—");
+      show("clb", els.clb, c.climb === 0 ? "—" : `${c.climb > 0 ? "▲" : "▼ DIVE"} ${Math.round(Math.abs(c.climb) * 100)}`);
       show("boost", els.boostOut, c.boost ? "ON" : "OFF");
       const now = performance.now();
       while (sentAt.length && now - sentAt[0] > 1000) sentAt.shift();
@@ -843,7 +845,7 @@
       els.pad.classList.add("on");
       document.body.classList.add("active");
       els.hint.textContent =
-        "Tilt forward to fly · back to brake · left/right to turn · hold ▲ ▼ to climb or dive · hold a drone in your sights until LOCKED, then FIRE.";
+        "The phone is your suit: tip forward to fly · further to nose dive · back to climb · left/right to turn. Hold a drone in your sights until LOCKED, then FIRE.";
       keepAwake();
       requestAnimationFrame(renderUi);
 

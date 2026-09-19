@@ -46,6 +46,13 @@ const BOOST_MULT = 2.2; // Space multiplies target speed
 const YAW_RATE = 55; // deg/s
 const ROLL_RATE = 160; // deg/s for manual barrel rolls (Q/E)
 const CLIMB_RATE = 40; // m/s vertical
+// Nose dive (glove palm-up pose, phone tipped well forward): the suit goes
+// head-down and flies along the dive — fast forward and faster down — rather
+// than sinking upright like a lift.
+const DIVE_RATE = 75; // m/s of descent in a full dive
+const DIVE_THROTTLE = 0.9; // a full dive carries at least this much forward throttle
+const DIVE_LEAN = 45; // deg of extra nose-down on the mesh in a full dive
+const DIVE_HUD_PITCH = 60; // deg the HUD pitch reads in a full dive
 // Idle hover: a gentle levitation bob + attitude sway when the suit is still.
 const HOVER_AMP = 1.3; // meters of vertical float
 const HOVER_OMEGA = 2.1; // rad/s (period ~3s)
@@ -126,7 +133,8 @@ const NET_SEND_MS = 1000 / NET_SEND_HZ;
 const NET_LERP = 0.5;
 // Phones in this mode send control inputs, not positions, and we fly their
 // suit here (see the phone controller for the wire format):
-//   pitch = throttle, roll = turn, yaw = climb (all -1..1), position_x = boost,
+//   pitch = throttle, roll = turn, yaw = climb (all -1..1; a negative climb is
+//   a nose dive, there is no upright descent), position_x = boost,
 //   position_y = FIRE presses so far (a counter, so a press is never missed)
 const CONTROL_MODE = 'PHONE_CTRL';
 // A remote pilot is live while its row keeps updating (phones send at least a
@@ -194,6 +202,7 @@ function flightState({ longitude, latitude, altitude, heading }) {
     lean: 0, // degrees — thrust line tipped into the motion, mesh only
     leanRate: 0,
     hover: 0, // meters — idle levitation offset (visual only)
+    dive: 0, // 0..1 smoothed nose-dive amount — tips the mesh and the chase camera
   };
 }
 
@@ -285,17 +294,24 @@ function leanTarget(s) {
   // suit down); the braking flare applies at any speed.
   const tip = Math.max(-MAX_ACCEL_LEAN, Math.min(MAX_ACCEL_LEAN, s.accel * ACCEL_LEAN));
   lean += tip > 0 ? tip * Math.max(0, Math.cos(Cesium.Math.toRadians(lean))) : tip;
-  return Math.max(MIN_LEAN, Math.min(MAX_LEAN, lean));
+  // A nose dive goes past horizontal: head down the flight path.
+  lean += s.dive * DIVE_LEAN;
+  return Math.max(MIN_LEAN, Math.min(MAX_LEAN + s.dive * DIVE_LEAN, lean));
 }
 
 // One step of the suit flight model, shared by our suit and by the phone
 // pilots we fly from their control inputs. `input`: throttle, yaw, climb in
-// -1..1 plus a boost flag. Returns true when the Homewood perimeter stopped
-// the suit this step.
+// -1..1, an optional dive in 0..1, plus a boost flag. Returns true when the
+// Homewood perimeter stopped the suit this step.
 function flySuit(s, input, dt) {
-  // Target forward speed from throttle (+ optional boost).
+  const dive = Math.max(0, Math.min(1, input.dive || 0));
+  s.dive = smooth(s.dive, dive, ANGLE_LERP, dt);
+
+  // Target forward speed from throttle (+ optional boost). A dive brings its
+  // own thrust: the suit flies down the slope, it doesn't drop in place.
   // SPEED_LERP 0.08 is the suit's spring-damper — do not crank this up.
-  const targetSpeed = input.throttle * MAX_SPEED * (input.boost ? BOOST_MULT : 1);
+  const throttle = Math.max(input.throttle, dive * DIVE_THROTTLE);
+  const targetSpeed = throttle * MAX_SPEED * (input.boost ? BOOST_MULT : 1);
   const previousSpeed = s.speed;
   s.speed = smooth(s.speed, targetSpeed, SPEED_LERP, dt);
   // Animation drivers: how hard the suit is accelerating and turning.
@@ -308,7 +324,7 @@ function flySuit(s, input, dt) {
   // Climb / dive. Vertical speed eases through the same spring as forward
   // speed, so the suit carries its weight on every axis and the body can lean
   // along a real flight path rather than a key state.
-  s.vspeed = smooth(s.vspeed, input.climb * CLIMB_RATE, SPEED_LERP, dt);
+  s.vspeed = smooth(s.vspeed, input.climb * CLIMB_RATE - dive * DIVE_RATE, SPEED_LERP, dt);
   s.altitude += s.vspeed * dt;
   if (s.altitude < MIN_ALT || s.altitude > MAX_ALT) {
     s.altitude = Math.min(MAX_ALT, Math.max(MIN_ALT, s.altitude));
@@ -372,8 +388,8 @@ function stepFlight(dt) {
   const gloveOn = isGloveConnected();
   const glove = gloveOn ? readGloveAxes() : null;
   const input = gloveOn
-    ? { throttle: glove.throttle, yaw: glove.yaw, climb: glove.climb, boost: keys.boost }
-    : { throttle: keys.throttle, yaw: keys.yaw, climb: keys.climb, boost: keys.boost };
+    ? { throttle: glove.throttle, yaw: glove.yaw, climb: glove.climb, dive: glove.dive, boost: keys.boost }
+    : { throttle: keys.throttle, yaw: keys.yaw, climb: keys.climb, dive: 0, boost: keys.boost };
   const rollInput = gloveOn ? 0 : keys.roll;
   suit.mode = gloveOn ? 'GLOVE' : 'KEYBOARD';
 
@@ -408,6 +424,7 @@ function stepFlight(dt) {
     input.throttle === 0 &&
     input.yaw === 0 &&
     input.climb === 0 &&
+    input.dive === 0 &&
     rollInput === 0 &&
     !input.boost &&
     Math.abs(suit.speed) < HOVER_IDLE_SPEED &&
@@ -583,7 +600,7 @@ function createPilot(viewer, overlay, id) {
     view: null, // view handed to the suit this frame
     sensors: sensorState(), // collisions for 'sim'; AGL readout while watched
     // 'sim': the phone's latest control inputs.
-    controls: { throttle: 0, yaw: 0, climb: 0, boost: false },
+    controls: { throttle: 0, yaw: 0, climb: 0, dive: 0, boost: false },
     shots: undefined, // the phone's FIRE counter as last seen
     fireQueued: false, // a FIRE press we haven't acted on yet
     hoverBlend: 0,
@@ -618,10 +635,12 @@ function receivePilotRow(pilot, row, live) {
   pilot.health = row.suitHealth;
 
   if (kind === 'sim') {
+    const vertical = clampAxis(row.yaw);
     pilot.controls = {
       throttle: clampAxis(row.pitch),
       yaw: clampAxis(row.roll),
-      climb: clampAxis(row.yaw),
+      climb: Math.max(0, vertical),
+      dive: Math.max(0, -vertical),
       boost: row.positionX > 0.5,
     };
     // A FIRE press bumps the counter. The first row only sets the baseline,
@@ -685,13 +704,13 @@ function flyPilot(viewer, pilot, dt, now) {
   const s = pilot.state;
   const c = pilot.controls;
   flySuit(s, c, dt);
-  s.pitch = smooth(s.pitch, c.climb * 18, ANGLE_LERP, dt);
+  s.pitch = smooth(s.pitch, c.climb * 18 - c.dive * DIVE_HUD_PITCH, ANGLE_LERP, dt);
   settleAttitude(s, coordinatedBank(s, c.yaw), dt);
   collide(viewer, s, pilot.sensors, now, REMOTE_SENSORS);
 
   // Parked: the same idle levitation as ours, a beat out of phase.
   const still =
-    !c.throttle && !c.yaw && !c.climb && !c.boost &&
+    !c.throttle && !c.yaw && !c.climb && !c.dive && !c.boost &&
     Math.abs(s.speed) < HOVER_IDLE_SPEED &&
     Math.abs(s.vspeed) < HOVER_IDLE_SPEED;
   pilot.hoverBlend = smooth(pilot.hoverBlend, still ? 1 : 0, 0.05, dt);

@@ -55,7 +55,7 @@ export function readGlove() {
 
 // Empirical poses from the live IMU (pitch, roll):
 //   (0, 160)   climb
-//   (0, 0)     down
+//   (0, 0)     nose dive (palm up)
 //   (-6, -120) forward speed
 //   pitch up   lean left
 //   pitch down lean right
@@ -84,7 +84,11 @@ function clampAxis(v) {
 
 // Flight axes from the current (or provided) IMU sample.
 export function readGloveAxes(sample = latest) {
-  const climb = lobe(sample.roll, ROLL_CLIMB) - lobe(sample.roll, ROLL_DOWN);
+  const climb = lobe(sample.roll, ROLL_CLIMB);
+  // Palm up is a nose dive, not a gentle descent: the flight model tips the
+  // suit head-down and flies it down the slope. Easing into the pose gives a
+  // shallow dive, so there is still a way to come down gently.
+  const dive = lobe(sample.roll, ROLL_DOWN);
   const throttle = lobe(sample.roll, ROLL_FWD);
   const pitchCmd = Math.abs(sample.pitch) < PITCH_DEADZONE ? 0 : sample.pitch;
   // Increase pitch → yaw left; decrease pitch → yaw right.
@@ -92,8 +96,9 @@ export function readGloveAxes(sample = latest) {
   return {
     throttle,
     climb,
+    dive,
     yaw,
-    visualPitch: climb * 18,
+    visualPitch: climb * 18 - dive * 60,
     visualRoll: -sample.pitch,
   };
 }

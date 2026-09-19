@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { DRONE_RADIUS } from '../sentinel/sentinel.js';
 import { toLocal } from './space.js';
-import { BACK_DISTANCE, UP_DISTANCE, PITCH_DOWN } from '../cesium/camera.js';
+import { chaseRig } from '../cesium/camera.js';
 
 // ---------------------------------------------------------------------------
 // Autolock — every frame, find the drone nearest the camera's forward vector
@@ -73,17 +73,19 @@ export function createAutolock(world, audio, name = '') {
   const forward = new THREE.Vector3();
   const toDrone = new THREE.Vector3();
   const screen = new THREE.Vector3();
+  const rig = {};
 
   // The chase view of a suit (see cesium/camera.js), in the local frame.
   function aimFrom(suit) {
     const heading = THREE.MathUtils.degToRad(suit.heading);
     const east = Math.sin(heading);
     const north = Math.cos(heading);
+    chaseRig(suit, rig);
     toLocal(suit, chest, 5.5);
-    toLocal(suit, eye, UP_DISTANCE);
-    eye.x -= east * BACK_DISTANCE;
-    eye.y -= north * BACK_DISTANCE;
-    forward.set(east * Math.cos(PITCH_DOWN), north * Math.cos(PITCH_DOWN), Math.sin(PITCH_DOWN));
+    toLocal(suit, eye, rig.up);
+    eye.x -= east * rig.back;
+    eye.y -= north * rig.back;
+    forward.set(east * Math.cos(rig.pitch), north * Math.cos(rig.pitch), Math.sin(rig.pitch));
   }
 
   // Angle between the camera's forward vector and the drone's centre.
