@@ -47,6 +47,15 @@ function pickTier(gpuName) {
   return 'lean';
 }
 
+/** Put the fixed late-afternoon sun over `place` (anything with a longitude). */
+export function setSunFor(viewer, place) {
+  const now = new Date();
+  const sunUtcMinutes = Math.round((SUN_SOLAR_HOUR - place.longitude / 15) * 60);
+  viewer.clock.currentTime = Cesium.JulianDate.fromDate(
+    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, sunUtcMinutes)),
+  );
+}
+
 export async function initWorld() {
   Cesium.Ion.defaultAccessToken = CESIUM_TOKEN;
 
@@ -160,11 +169,7 @@ export async function initWorld() {
 
   // Real sunlight at a fixed late-afternoon time. The sun drives the sky, the
   // aerial haze on distant tiles, and the suit's key light (player.js).
-  const now = new Date();
-  const sunUtcMinutes = Math.round((SUN_SOLAR_HOUR - site.longitude / 15) * 60);
-  viewer.clock.currentTime = Cesium.JulianDate.fromDate(
-    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, sunUtcMinutes)),
-  );
+  setSunFor(viewer, site);
   viewer.clock.shouldAnimate = false;
   scene.light = new Cesium.SunLight();
   scene.globe.enableLighting = true;

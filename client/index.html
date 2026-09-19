@@ -123,15 +123,18 @@
       <span class="landing-mark">IRON GLOVE <i>//</i> MARK VII</span>
       <span class="landing-status"><i></i>FLIGHT SYSTEMS ONLINE</span>
     </header>
-    <div class="boot-core">
-      <div class="reactor" aria-hidden="true">
+    <div class="boot-hero" aria-hidden="true">
+      <div class="reactor">
         <span class="reactor-ring reactor-ring-outer"></span>
         <span class="reactor-ring reactor-ring-cells"></span>
         <span class="reactor-ring reactor-ring-inner"></span>
         <span class="reactor-heart"></span>
       </div>
+      <canvas id="boot-suit" class="boot-suit"></canvas>
+    </div>
+    <div class="boot-core">
       <p class="boot-eyebrow">GLOVE · KEYBOARD · PHONE</p>
-      <h1 class="boot-wordmark" id="boot-wordmark">IRON GLOVE</h1>
+      <h1 class="boot-wordmark" id="boot-wordmark">IRON<br />GLOVE</h1>
       <p class="boot-tagline">Suit up and fly photoreal 3D airspace over America&rsquo;s landmarks.</p>
       <button type="button" id="btnStart">START FLIGHT <span aria-hidden="true">→</span></button>
     </div>
@@ -163,6 +166,27 @@
     <div class="destination-film-area">
       <p class="destination-instruction"><span>← →</span> SELECT · <span>ENTER</span> DEPLOY</p>
       <div id="dest-filmstrip" class="destination-filmstrip" aria-label="Flight destinations"></div>
+    </div>
+  </section>
+
+  <section id="loading" class="loading-screen" role="status" aria-live="polite" aria-labelledby="loading-title" hidden>
+    <div id="loading-art" class="loading-art" aria-hidden="true"></div>
+    <header class="landing-bar" aria-hidden="true">
+      <span class="landing-mark">IRON GLOVE <i>//</i> MARK VII</span>
+      <span class="landing-status"><i></i>INBOUND</span>
+    </header>
+    <div class="loading-copy">
+      <span class="destination-kicker">INBOUND TO</span>
+      <h1 id="loading-title"></h1>
+      <p id="loading-place" class="destination-place"></p>
+      <div class="loading-meter">
+        <div class="loading-track"><span id="loading-bar"></span></div>
+        <div class="loading-readout">
+          <span id="loading-status">WAKING FLIGHT SYSTEMS</span>
+          <span id="loading-percent">0%</span>
+        </div>
+      </div>
+      <button type="button" id="loading-skip">SKIP <span aria-hidden="true">→</span></button>
     </div>
   </section>
 

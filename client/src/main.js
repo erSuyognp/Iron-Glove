@@ -1,9 +1,10 @@
 import * as Cesium from 'cesium';
-import { initWorld, hasValidToken, getRenderQuality } from './cesium/world.js';
+import { initWorld, hasValidToken, getRenderQuality, setSunFor } from './cesium/world.js';
 import { updateChaseCamera } from './cesium/camera.js';
 import { initBoundary } from './cesium/boundary.js';
 import { site, chooseSite, settleSite, findSite } from './sites.js';
 import { pickSite } from './landing/landing.js';
+import { loadSite } from './landing/loading.js';
 import { initKeyboard, readAxes, setSpaceFires, consumeFireKey } from './input/keyboard.js';
 import {
   connectGlove,
@@ -969,7 +970,13 @@ async function boot() {
     connectGlove();
   });
 
-  showBanner(`Inbound to <b>${site.name}</b><br>${site.place}`);
+  // Hold the loading screen up while the site streams in behind it. It also
+  // measures the ground, so a site normally comes out of it already settled
+  // and the arrival hold below is only the fallback for a slow connection.
+  worldPromise.then((v) => v && setSunFor(v, site));
+  await loadSite(worldPromise, spawnState);
+  suit = spawnState();
+
   let viewer;
   try {
     viewer = await worldPromise;

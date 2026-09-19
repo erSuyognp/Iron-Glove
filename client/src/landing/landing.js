@@ -1,5 +1,8 @@
 import { SITES } from '../sites.js';
 import { siteArt } from './art.js';
+import { startHeroSuit } from './hero.js';
+
+const SUIT_GLB = '/iron_man_ucm.glb'; // the suit the game flies (main.js)
 
 // This is presentation-only: sites.js remains the single source of truth for
 // every destination's name, coordinates, and flight setup.
@@ -57,6 +60,8 @@ export function pickSite(initialSite = SITES[0]) {
 
   boot.hidden = false;
   dest.hidden = true;
+  const heroCanvas = document.getElementById('boot-suit');
+  const hero = heroCanvas ? startHeroSuit(heroCanvas, SUIT_GLB) : null;
   if (hud) {
     hud.inert = true;
     hud.setAttribute('aria-hidden', 'true');
@@ -125,6 +130,7 @@ export function pickSite(initialSite = SITES[0]) {
       if (launched) return;
       boot.hidden = true;
       dest.hidden = false;
+      hero?.dispose(); // frees its WebGL context well before the game needs the GPU
       select(selectedIndex, { focus: true, scroll: true });
     }
 

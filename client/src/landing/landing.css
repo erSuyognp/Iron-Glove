@@ -3,7 +3,8 @@
    red, and a condensed display face over monospace labels. */
 
 #boot,
-#dest {
+#dest,
+#loading {
   --gold: #e2b85a;
   --gold-soft: rgba(226, 184, 90, 0.55);
   --gold-line: rgba(226, 184, 90, 0.22);
@@ -22,7 +23,8 @@
 }
 
 #boot[hidden],
-#dest[hidden] {
+#dest[hidden],
+#loading[hidden] {
   display: none;
 }
 
@@ -77,12 +79,16 @@
 
 /* ---------------------------------- Boot --------------------------------- */
 
+/* Copy on the left, the hovering suit on the right with the reactor as its
+   halo. */
 .boot-screen {
   display: grid;
-  place-items: center;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  align-items: center;
+  padding: clamp(60px, 9vh, 96px) clamp(18px, 6vw, 110px) clamp(56px, 9vh, 90px);
   background:
-    radial-gradient(ellipse 60% 48% at 50% 34%, rgba(229, 40, 28, 0.26), transparent 70%),
-    radial-gradient(ellipse 90% 70% at 50% 110%, rgba(226, 184, 90, 0.1), transparent 60%),
+    radial-gradient(ellipse 46% 56% at 73% 46%, rgba(229, 40, 28, 0.3), transparent 72%),
+    radial-gradient(ellipse 90% 70% at 30% 110%, rgba(226, 184, 90, 0.1), transparent 60%),
     var(--ink);
 }
 
@@ -103,12 +109,38 @@
 .boot-core {
   position: relative;
   z-index: 2;
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 0 24px;
-  text-align: center;
+  align-items: flex-start;
   animation: landing-rise 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.boot-hero {
+  position: relative;
+  z-index: 1;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+}
+
+/* The game's suit, drawn by landing/hero.js; fades in once the GLB is up. */
+.boot-suit {
+  position: absolute;
+  inset: -6% -12%;
+  width: 124%;
+  height: 112%;
+  opacity: 0;
+  transition: opacity 900ms ease;
+  filter: drop-shadow(0 30px 40px rgba(0, 0, 0, 0.55));
+}
+
+.boot-suit.ready {
+  opacity: 1;
 }
 
 @keyframes landing-rise {
@@ -121,10 +153,10 @@
 /* The arc reactor: three rings around a hot core, turning slowly. */
 .reactor {
   position: relative;
-  width: clamp(120px, 24vmin, 250px);
+  width: min(62vmin, 92%);
   aspect-ratio: 1;
-  margin-bottom: clamp(20px, 4.5vh, 48px);
   border-radius: 50%;
+  opacity: 0.32;
   filter: drop-shadow(0 0 34px rgba(229, 40, 28, 0.55));
 }
 
@@ -181,7 +213,6 @@
   color: var(--gold);
   font-size: clamp(9px, 0.85vw, 13px);
   letter-spacing: 0.42em;
-  text-indent: 0.42em;
 }
 
 .boot-wordmark {
@@ -191,12 +222,11 @@
   background-clip: text;
   color: transparent;
   font-family: var(--display);
-  font-size: clamp(44px, 9.4vw, 148px);
+  font-size: clamp(54px, 10.5vw, 176px);
   font-stretch: 75%;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  line-height: 0.95;
-  text-indent: 0.1em;
+  letter-spacing: 0.06em;
+  line-height: 0.9;
   white-space: nowrap;
   filter: drop-shadow(0 6px 30px rgba(229, 40, 28, 0.35));
 }
@@ -530,6 +560,125 @@
   letter-spacing: 0.06em;
 }
 
+/* ----------------------------- Loading screen ---------------------------- */
+
+/* Cesium streams the site underneath; this lifts once the view is sharp. */
+.loading-screen {
+  display: grid;
+  align-items: end;
+  transition: opacity 650ms ease;
+}
+
+.loading-screen.leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-art,
+.loading-art svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.loading-art {
+  animation: loading-drift 26s ease-in-out infinite alternate;
+}
+
+@keyframes loading-drift {
+  from { transform: scale(1.03); }
+  to { transform: scale(1.12) translateX(-1.5%); }
+}
+
+.loading-screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(0deg, var(--ink) 0%, rgba(7, 7, 10, 0.84) 30%, rgba(7, 7, 10, 0.2) 64%),
+    linear-gradient(180deg, rgba(7, 7, 10, 0.6), transparent 18%),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 4px);
+  pointer-events: none;
+}
+
+.loading-copy {
+  position: relative;
+  z-index: 2;
+  padding: 0 clamp(18px, 3vw, 48px) clamp(28px, 6vh, 64px);
+}
+
+.loading-copy h1 {
+  margin: clamp(12px, 2vh, 20px) 0 0;
+  color: #fffaf0;
+  font-family: var(--display);
+  font-size: clamp(34px, 5.4vw, 84px);
+  font-stretch: 75%;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 0.95;
+  text-shadow: 0 4px 30px rgba(0, 0, 0, 0.6);
+}
+
+.loading-meter {
+  margin-top: clamp(22px, 4.5vh, 44px);
+}
+
+.loading-track {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(246, 239, 224, 0.14);
+}
+
+.loading-track span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #b98a38, #f6dc98);
+  box-shadow: 0 0 14px var(--gold);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 350ms ease-out;
+}
+
+.loading-readout {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+  font-size: clamp(9px, 0.78vw, 12px);
+  letter-spacing: 0.26em;
+}
+
+#loading-status {
+  color: rgba(246, 239, 224, 0.75);
+}
+
+#loading-percent {
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+#loading-skip {
+  appearance: none;
+  margin-top: clamp(14px, 2.6vh, 26px);
+  padding: 0;
+  border: 0;
+  color: rgba(246, 239, 224, 0.45);
+  background: none;
+  font-family: var(--mono);
+  font-size: clamp(9px, 0.74vw, 11px);
+  letter-spacing: 0.26em;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+#loading-skip:hover,
+#loading-skip:focus-visible {
+  outline: none;
+  color: var(--gold);
+}
+
 @media (max-width: 920px) {
   .destination-filmstrip {
     display: flex;
@@ -551,6 +700,13 @@
 }
 
 @media (max-width: 720px) {
+  .boot-screen { grid-template-columns: minmax(0, 1fr); }
+
+  .boot-hero {
+    grid-column: 1;
+    opacity: 0.45;
+  }
+
   .landing-status { display: none; }
   .boot-foot-label { display: none; }
   .boot-wordmark { letter-spacing: 0.06em; }
@@ -563,11 +719,6 @@
 }
 
 @media (max-height: 640px) {
-  .reactor {
-    width: clamp(84px, 18vmin, 130px);
-    margin-bottom: 14px;
-  }
-
   .destination-blurb { display: none; }
   .destination-tile-place { display: none; }
   .destination-copy { padding-top: 56px; }
@@ -578,7 +729,13 @@
   .reactor-heart,
   .landing-status i,
   .boot-core,
+  .loading-art,
   .destination-art-layer { animation: none; }
+
+  .loading-screen,
+  .loading-track span { transition: none; }
+
+  .boot-suit { transition: none; }
 
   #btnStart,
   #dest-launch,
