@@ -10,10 +10,13 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default __t.row({
-  id: __t.u8().primaryKey(),
-  x: __t.f32(),
-  y: __t.f32(),
-  z: __t.f32(),
-  hp: __t.u8(),
-});
+export default {
+  playerId: __t.string(),
+  positionX: __t.f32(),
+  positionY: __t.f32(),
+  positionZ: __t.f32(),
+  pitch: __t.f32(),
+  roll: __t.f32(),
+  yaw: __t.f32(),
+  mode: __t.string(),
+};

@@ -9,6 +9,7 @@ export function initHUD() {
   els.roll = document.getElementById('hud-roll');
   els.hdg = document.getElementById('hud-hdg');
   els.mode = document.getElementById('hud-mode');
+  els.net = document.getElementById('hud-net');
   els.hp = document.getElementById('hud-suit-hp');
   els.hpBar = document.getElementById('hud-suit-bar');
   els.jarvis = document.getElementById('jarvis-ticker');
@@ -40,6 +41,11 @@ export function updateHUD(state) {
 
   if (els.hp) els.hp.textContent = Math.round(state.health);
   if (els.hpBar) els.hpBar.style.width = `${Math.max(0, Math.min(100, state.health))}%`;
+}
+
+// SpacetimeDB link status shown in the HUD (e.g. "ONLINE", "OFFLINE").
+export function setNet(text) {
+  if (els.net) els.net.textContent = text;
 }
 
 export function setJarvis(line) {

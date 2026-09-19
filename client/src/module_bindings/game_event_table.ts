@@ -10,10 +10,10 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  x: __t.f32(),
-  y: __t.f32(),
-  z: __t.f32(),
-  yaw: __t.f32(),
-  thrusting: __t.bool(),
-};
+export default __t.row({
+  eventId: __t.u64().primaryKey().name("event_id"),
+  eventType: __t.string().name("event_type"),
+  playerId: __t.string().name("player_id"),
+  detail: __t.string(),
+  timestamp: __t.timestamp(),
+});

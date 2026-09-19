@@ -1,8 +1,0 @@
-{
-  "dev": {
-    "run": "npm run dev"
-  },
-  "server": "maincloud",
-  "database": "iron-glove-suyog",
-  "module-path": "./spacetimedb"
-}

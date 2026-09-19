@@ -1,3 +1,115 @@
-// Re-exports the compiled stdb-bridge from game/ during transition.
-// Once client/ replaces game/, wire directly to the TypeScript source via Vite.
-export { createIronGloveStdb } from '../../game/stdb-bridge.js';
+// SpacetimeDB link for IRON GLOVE (Phase 2).
+//
+// Thin wrapper over the generated bindings. The client stays authoritative for
+// all flight physics; this module only:
+//   1. connects to the module and subscribes to `player_state`,
+//   2. calls join_game once on connect,
+//   3. pushes the client-computed transform via update_orientation, and
+//   4. reads our own row back out (proving the round-trip) via a callback.
+//
+// It fails soft: if the module is unreachable the game keeps running on local
+// physics and just reports an offline status.
+
+import { DbConnection } from '../module_bindings';
+
+const HOST = import.meta.env.VITE_SPACETIMEDB_HOST || 'ws://127.0.0.1:3000';
+const DB_NAME = import.meta.env.VITE_SPACETIMEDB_DB_NAME || 'iron-glove';
+
+// SpacetimeDB speaks WebSocket; accept http(s) hosts and upgrade the scheme.
+function toWs(host) {
+  if (host.startsWith('ws')) return host;
+  if (host.startsWith('https://')) return 'wss://' + host.slice('https://'.length);
+  if (host.startsWith('http://')) return 'ws://' + host.slice('http://'.length);
+  return host;
+}
+
+// opts: { playerId, mode, onStatus(status), onPlayer(row) }
+export function createStdbClient({
+  playerId = 'suyog',
+  mode = 'KEYBOARD',
+  onStatus,
+  onPlayer,
+} = {}) {
+  let conn = null;
+  let connected = false; // socket open
+  let subscribed = false; // initial rows applied + join sent
+
+  const status = (s) => {
+    if (onStatus) onStatus(s);
+  };
+
+  function handleRow(row) {
+    if (row.playerId === playerId && onPlayer) onPlayer(row);
+  }
+
+  function start() {
+    status('connecting');
+    try {
+      DbConnection.builder()
+        .withUri(toWs(HOST))
+        .withDatabaseName(DB_NAME)
+        .onConnect((c) => {
+          conn = c;
+          connected = true;
+          status('connected');
+
+          // Read our row back whenever the server broadcasts a delta.
+          c.db.playerState.onInsert((_ctx, row) => handleRow(row));
+          c.db.playerState.onUpdate((_ctx, _old, row) => handleRow(row));
+
+          c.subscriptionBuilder()
+            .onApplied(() => {
+              subscribed = true;
+              // Insert (or reset) our row at the spawn point.
+              c.reducers.joinGame({ playerId, mode });
+              status('online');
+            })
+            .subscribe(['SELECT * FROM player_state']);
+        })
+        .onDisconnect(() => {
+          connected = false;
+          subscribed = false;
+          conn = null;
+          status('offline');
+        })
+        .onConnectError((_ctx, err) => {
+          connected = false;
+          subscribed = false;
+          conn = null;
+          status('error');
+          console.warn('[stdb] connect error:', err?.message ?? err);
+        })
+        .build();
+    } catch (err) {
+      status('error');
+      console.warn('[stdb] failed to start:', err?.message ?? err);
+    }
+  }
+
+  // Push the client-computed transform. No-op until we're fully online so we
+  // never fire update_orientation before join_game has created the row.
+  function pushTransform(t) {
+    if (!conn || !subscribed) return;
+    conn.reducers.updateOrientation({
+      playerId,
+      positionX: t.positionX,
+      positionY: t.positionY,
+      positionZ: t.positionZ,
+      pitch: t.pitch,
+      roll: t.roll,
+      yaw: t.yaw,
+      mode: t.mode,
+    });
+  }
+
+  return {
+    start,
+    pushTransform,
+    get connected() {
+      return connected;
+    },
+    get online() {
+      return subscribed;
+    },
+  };
+}

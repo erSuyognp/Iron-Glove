@@ -34,49 +34,47 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
-import HitBossReducer from "./hit_boss_reducer";
-import JoinReducer from "./join_reducer";
-import UpdatePoseReducer from "./update_pose_reducer";
+import JoinGameReducer from "./join_game_reducer";
+import UpdateOrientationReducer from "./update_orientation_reducer";
 
 // Import all procedure arg schemas
 
 // Import all table schema definitions
-import BossRow from "./boss_table";
-import PilotRow from "./pilot_table";
+import GameEventRow from "./game_event_table";
+import PlayerStateRow from "./player_state_table";
 
 /** Type-only namespace exports for generated type groups. */
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
-  boss: __table({
-    name: 'boss',
+  gameEvent: __table({
+    name: 'game_event',
     indexes: [
-      { accessor: 'id', name: 'boss_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
+      { accessor: 'event_id', name: 'game_event_event_id_idx_btree', algorithm: 'btree', columns: [
+        'eventId',
       ] },
     ],
     constraints: [
-      { name: 'boss_id_key', constraint: 'unique', columns: ['id'] },
+      { name: 'game_event_event_id_key', constraint: 'unique', columns: ['eventId'] },
     ],
-  }, BossRow),
-  pilot: __table({
-    name: 'pilot',
+  }, GameEventRow),
+  playerState: __table({
+    name: 'player_state',
     indexes: [
-      { accessor: 'id', name: 'pilot_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
+      { accessor: 'player_id', name: 'player_state_player_id_idx_btree', algorithm: 'btree', columns: [
+        'playerId',
       ] },
     ],
     constraints: [
-      { name: 'pilot_id_key', constraint: 'unique', columns: ['id'] },
+      { name: 'player_state_player_id_key', constraint: 'unique', columns: ['playerId'] },
     ],
-  }, PilotRow),
+  }, PlayerStateRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
-  __reducerSchema("hit_boss", HitBossReducer),
-  __reducerSchema("join", JoinReducer),
-  __reducerSchema("update_pose", UpdatePoseReducer),
+  __reducerSchema("join_game", JoinGameReducer),
+  __reducerSchema("update_orientation", UpdateOrientationReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

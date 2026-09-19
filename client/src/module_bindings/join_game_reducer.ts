@@ -11,5 +11,6 @@ import {
 } from "spacetimedb";
 
 export default {
-  amount: __t.u8(),
+  playerId: __t.string(),
+  mode: __t.string(),
 };

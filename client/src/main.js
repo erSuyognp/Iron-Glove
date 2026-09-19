@@ -2,10 +2,11 @@ import * as Cesium from 'cesium';
 import { initWorld, hasValidToken, JHU_HOMEWOOD } from './cesium/world.js';
 import { updateChaseCamera } from './cesium/camera.js';
 import { initKeyboard, readAxes } from './input/keyboard.js';
-import { initHUD, updateHUD, setJarvis, setGpws, showBanner, hideBanner, updateSpeedFx } from './hud/hud.js';
+import { initHUD, updateHUD, setJarvis, setGpws, setNet, showBanner, hideBanner, updateSpeedFx } from './hud/hud.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
 import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
 import { initTrail } from './suit/thruster.js';
+import { createStdbClient } from './spacetimedb/client.js';
 
 // ---- Flight tuning ----
 const MAX_SPEED = 60; // m/s forward
@@ -41,6 +42,17 @@ const DAMAGE_SCALE = 0.55; // m/s -> HP
 const DAMAGE_MIN = 6;
 const DAMAGE_MAX = 45;
 const GPWS_ALT = 45; // AGL below which the "PULL UP" warning flashes
+
+// ---- SpacetimeDB sync (Phase 2) ----
+// The client stays authoritative for physics; we mirror the computed transform
+// into SpacetimeDB and render the player from the row we read back.
+const PLAYER_ID = 'suyog';
+const NET_SEND_HZ = 30; // how often we push our transform to the server
+const NET_SEND_MS = 1000 / NET_SEND_HZ;
+// Render-smoothing for the position we read back. This is snapshot
+// interpolation (netcode), NOT physics — it just keeps the 30 Hz stream smooth
+// at 60 fps. Physics still runs entirely client-side in stepFlight().
+const NET_LERP = 0.5;
 
 const JARVIS_LINES = {
   online: 'Suit online. Homewood airspace is clear, sir.',
@@ -92,6 +104,16 @@ let idle = false; // suit is still enough to levitate
 let hoverBlend = 0; // 0..1 ease for the idle hover
 let hoverClock = 0; // seconds, advances the hover sine
 
+// ---- SpacetimeDB state ----
+// `net` holds the latest transform read back from our player_state row (mapped
+// out of the position_x/y/z convention). `renderPos` eases toward it so the
+// rendered suit is driven by the round-tripped server state when online.
+let stdb = null;
+let net = null; // { longitude, latitude, altitude, heading, pitch, roll } | null
+const renderPos = { longitude: 0, latitude: 0, altitude: 0, heading: 0, pitch: 0, roll: 0 };
+let renderInit = false; // renderPos seeded from the first net snapshot
+let lastNetSendAt = 0;
+
 function lerp(a, b, t) {
   return a + (b - a) * t;
 }
@@ -106,6 +128,11 @@ function smooth(current, target, factor60, dt) {
 // Normalize an angle in degrees to (-180, 180].
 function normalizeDeg(a) {
   return ((((a + 180) % 360) + 360) % 360) - 180;
+}
+
+// Ease a heading toward a target along the shortest arc; result in [0, 360).
+function easeHeading(cur, target, k) {
+  return (cur + normalizeDeg(target - cur) * k + 360) % 360;
 }
 
 function stepFlight(dt) {
@@ -242,19 +269,19 @@ function makeSuitEntity(viewer) {
   });
 }
 
-function updateSuitEntity(entity) {
+function updateSuitEntity(entity, s) {
   entity.position = Cesium.Cartesian3.fromDegrees(
-    suit.longitude,
-    suit.latitude,
-    suit.altitude + suit.hover,
+    s.longitude,
+    s.latitude,
+    s.altitude + s.hover,
   );
   // Idle sway: a slow roll/pitch wobble, as if thrusters are holding a hover.
   const swayRoll = Math.sin(hoverClock * 1.3) * HOVER_SWAY_ROLL * hoverBlend;
   const swayPitch = Math.sin(hoverClock * 1.7 + 1.0) * HOVER_SWAY_PITCH * hoverBlend;
   const hpr = new Cesium.HeadingPitchRoll(
-    Cesium.Math.toRadians(suit.heading),
-    Cesium.Math.toRadians(suit.pitch + swayPitch),
-    Cesium.Math.toRadians(suit.roll + suit.bank + swayRoll),
+    Cesium.Math.toRadians(s.heading),
+    Cesium.Math.toRadians(s.pitch + swayPitch),
+    Cesium.Math.toRadians(s.roll + s.bank + swayRoll),
   );
   entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
     entity.position.getValue(Cesium.JulianDate.now()),
@@ -298,6 +325,37 @@ async function boot() {
   const trail = initTrail(viewer);
   updateChaseCamera(viewer, suit);
 
+  // SpacetimeDB link: mirror the client-computed transform into the DB and
+  // render the suit from the row we read back. Fails soft — if the module is
+  // unreachable the game keeps flying on local physics.
+  setNet('CONNECTING');
+  stdb = createStdbClient({
+    playerId: PLAYER_ID,
+    mode: 'KEYBOARD',
+    onStatus: (s) => {
+      setNet(s.toUpperCase());
+      if (s === 'online') {
+        setJarvis('SpacetimeDB link established. Telemetry streaming, sir.');
+        console.log('[stdb] online — join_game sent, streaming update_orientation');
+      } else if (s === 'offline' || s === 'error') {
+        net = null;
+        console.warn(`[stdb] link ${s} — flying on local physics only`);
+      }
+    },
+    onPlayer: (row) => {
+      // Map the position_x/y/z convention back to lon/lat/alt.
+      net = {
+        longitude: row.positionX,
+        altitude: row.positionY,
+        latitude: row.positionZ,
+        heading: row.yaw,
+        pitch: row.pitch,
+        roll: row.roll,
+      };
+    },
+  });
+  stdb.start();
+
   // Game loop.
   let last = performance.now();
   function frame(now) {
@@ -332,8 +390,56 @@ async function boot() {
     hoverBlend = smooth(hoverBlend, idle && !rebooting ? 1 : 0, 0.05, dt);
     suit.hover = Math.sin(hoverClock * HOVER_OMEGA) * HOVER_AMP * hoverBlend;
 
-    updateSuitEntity(suitEntity);
-    updateChaseCamera(viewer, suit);
+    // --- SpacetimeDB round-trip ---
+    // Push our client-computed transform (throttled to NET_SEND_HZ), then let
+    // the subscription hand the row back via onPlayer -> `net`.
+    if (stdb && !rebooting && now - lastNetSendAt >= NET_SEND_MS) {
+      lastNetSendAt = now;
+      stdb.pushTransform({
+        positionX: suit.longitude,
+        positionY: suit.altitude,
+        positionZ: suit.latitude,
+        pitch: suit.pitch,
+        roll: suit.roll,
+        yaw: suit.heading,
+        mode: suit.mode,
+      });
+    }
+
+    // Render from the server-echoed position when online; else local physics.
+    let view;
+    if (stdb && stdb.online && net) {
+      if (!renderInit) {
+        Object.assign(renderPos, net);
+        renderInit = true;
+      }
+      const k = 1 - Math.pow(1 - NET_LERP, dt * 60);
+      renderPos.longitude = lerp(renderPos.longitude, net.longitude, k);
+      renderPos.latitude = lerp(renderPos.latitude, net.latitude, k);
+      renderPos.altitude = lerp(renderPos.altitude, net.altitude, k);
+      renderPos.pitch = lerp(renderPos.pitch, net.pitch, k);
+      renderPos.roll = lerp(renderPos.roll, net.roll, k);
+      renderPos.heading = easeHeading(renderPos.heading, net.heading, k);
+      // Position/orientation come from the DB round-trip; bank/hover/speed are
+      // local visual-only extras that aren't part of the schema.
+      view = {
+        longitude: renderPos.longitude,
+        latitude: renderPos.latitude,
+        altitude: renderPos.altitude,
+        heading: renderPos.heading,
+        pitch: renderPos.pitch,
+        roll: renderPos.roll,
+        bank: suit.bank,
+        hover: suit.hover,
+        speed: suit.speed,
+      };
+    } else {
+      renderInit = false; // reseed from net when the link (re)appears
+      view = suit;
+    }
+
+    updateSuitEntity(suitEntity, view);
+    updateChaseCamera(viewer, view);
 
     // Speed-driven feel: FOV punch, edge blur, and vignette all ramp together.
     const speedRatio = Math.min(1, Math.abs(suit.speed) / FX_FULL_SPEED);
