@@ -55,7 +55,7 @@ const bootBody = new THREE.Vector3();
  * Create the Three.js overlay and start loading the GLB.
  * @param {Cesium.Viewer} viewer
  * @param {string} glbUrl  served URL of the .glb (e.g. '/iron_man.glb')
- * @returns {{ createSuit(opts?):SuitHandle, addObject(object, prepare):void, render():void, setVisible(b):void }}
+ * @returns {{ createSuit(opts?):SuitHandle, addObject(object, prepare):void, render():void, setVisible(b):void, warm(object):void }}
  */
 export function initSuitOverlay(viewer, glbUrl) {
   const cesiumCanvas = viewer.scene.canvas;
@@ -88,6 +88,10 @@ export function initSuitOverlay(viewer, glbUrl) {
   document.body.appendChild(canvas);
 
   const scene = new THREE.Scene();
+  // render() below updates the world matrices itself, once, after every suit
+  // has been placed. Left on, renderer.render() would walk every skeleton a
+  // second time each frame.
+  scene.matrixWorldAutoUpdate = false;
 
   // Matrix updates are manual. The Three camera stays at the origin while each
   // suit is transformed into camera-relative space immediately before drawing.
@@ -268,15 +272,18 @@ export function initSuitOverlay(viewer, glbUrl) {
     extras.push(prepare);
   }
 
-  // Match the Three canvas resolution to the Cesium canvas (CSS pixels).
+  // Match the Three canvas resolution to the Cesium canvas (CSS pixels). The
+  // size is only re-read when the canvas actually resizes: clientWidth forces
+  // a synchronous layout, and the HUD dirties layout every frame.
+  const size = { w: 1, h: 1 };
   function syncSize() {
     const w = cesiumCanvas.clientWidth || window.innerWidth;
     const h = cesiumCanvas.clientHeight || window.innerHeight;
-    const size = renderer.getSize(new THREE.Vector2());
-    if (size.x !== w || size.y !== h) {
+    if (size.w !== w || size.h !== h) {
+      size.w = w;
+      size.h = h;
       renderer.setSize(w, h, false);
     }
-    return { w, h };
   }
 
   // Draw from Cesium's camera. The important detail is that each suit is first
@@ -285,7 +292,7 @@ export function initSuitOverlay(viewer, glbUrl) {
   // consume the exact same camera pose for the current frame.
   function render() {
     if (hidden || !template) return;
-    const { w, h } = syncSize();
+    const { w, h } = size;
     const cam = viewer.camera;
 
     // Projection: Cesium's vertical FOV (fovy already accounts for the speed
@@ -319,5 +326,14 @@ export function initSuitOverlay(viewer, glbUrl) {
   ro.observe(cesiumCanvas);
   syncSize();
 
-  return { createSuit, addObject, render, setVisible };
+  // Compile an object's shaders now, against this scene's lights, without
+  // drawing it. Otherwise the first missile or explosion of a fight compiles
+  // its program mid-frame, which shows as a dropped frame or several. While
+  // `object`'s materials are alive their programs stay cached, so keep it
+  // around for anything that comes and goes.
+  function warm(object) {
+    renderer.compile(object, camera, scene);
+  }
+
+  return { createSuit, addObject, render, setVisible, warm };
 }

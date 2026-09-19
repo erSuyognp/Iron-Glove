@@ -10,7 +10,8 @@ let adiPitch; // inner group translated by pitch
 let adiRoll; // outer group rotated by -roll
 let htMarks; // heading-tape tick group
 let htReadout; // heading numeric readout
-let hdgFrame = 0;
+let shownTape = ''; // last transform / readout written, to skip no-op DOM writes
+let shownReadout = '';
 
 function buildLadder() {
   let s = '';
@@ -90,7 +91,7 @@ export function initAttitude() {
   if (ht) {
     ht.innerHTML = `
       <svg viewBox="0 0 340 48" width="100%" height="100%">
-        <g id="ht-marks"></g>
+        <g id="ht-marks">${buildHeadingMarks()}</g>
         <polygon points="170,30 164,42 176,42" fill="#ffcf3f"/>
         <line x1="170" y1="14" x2="170" y2="32" stroke="#ffcf3f" stroke-width="1.5"/>
         <rect x="150" y="34" width="40" height="14" fill="rgba(10,14,26,0.7)" stroke="#00ccff" stroke-width="0.75"/>
@@ -101,24 +102,26 @@ export function initAttitude() {
   }
 }
 
-function buildHeadingMarks(heading) {
+// The whole tape, built once: a tick every 5 degrees at x = degrees * HDG_PX,
+// running half a window past 0 and 360 so it never shows an end. Scrolling it
+// is then a single transform instead of re-parsing the marks as the heading
+// changes.
+function buildHeadingMarks() {
   let s = '';
-  const cx = 170;
-  const start = Math.ceil((heading - 44) / 5) * 5;
-  for (let d = start; d <= heading + 44; d += 5) {
-    const x = cx + (d - heading) * HDG_PX;
-    const dd = ((Math.round(d) % 360) + 360) % 360;
+  for (let d = -45; d <= 405; d += 5) {
+    const x = d * HDG_PX;
+    const dd = ((d % 360) + 360) % 360;
     if (dd % 10 === 0) {
-      s += `<line x1="${x.toFixed(1)}" y1="30" x2="${x.toFixed(1)}" y2="16" stroke="#00ccff" stroke-width="1.5"/>`;
+      s += `<line x1="${x}" y1="30" x2="${x}" y2="16" stroke="#00ccff" stroke-width="1.5"/>`;
       let label;
       if (dd === 0) label = 'N';
       else if (dd === 90) label = 'E';
       else if (dd === 180) label = 'S';
       else if (dd === 270) label = 'W';
       else label = String(dd / 10).padStart(2, '0');
-      s += `<text x="${x.toFixed(1)}" y="12" fill="#00ccff" font-size="10" text-anchor="middle" font-family="monospace">${label}</text>`;
+      s += `<text x="${x}" y="12" fill="#00ccff" font-size="10" text-anchor="middle" font-family="monospace">${label}</text>`;
     } else {
-      s += `<line x1="${x.toFixed(1)}" y1="30" x2="${x.toFixed(1)}" y2="23" stroke="#00ccff" stroke-width="1" opacity="0.6"/>`;
+      s += `<line x1="${x}" y1="30" x2="${x}" y2="23" stroke="#00ccff" stroke-width="1" opacity="0.6"/>`;
     }
   }
   return s;
@@ -128,10 +131,16 @@ export function updateAttitude(pitch, roll, heading) {
   if (adiPitch) adiPitch.setAttribute('transform', `translate(0 ${(pitch * PITCH_PX).toFixed(2)})`);
   if (adiRoll) adiRoll.setAttribute('transform', `rotate(${(-roll).toFixed(2)} 200 200)`);
 
-  // Heading tape churns DOM, so refresh it a bit slower than the ladder.
-  if (htMarks && hdgFrame % 3 === 0) {
-    htMarks.innerHTML = buildHeadingMarks(heading);
-    if (htReadout) htReadout.textContent = String(((Math.round(heading) % 360) + 360) % 360).padStart(3, '0');
+  // Heading tape: slide the prebuilt marks under the fixed centre index (x = 170).
+  const hdg = ((heading % 360) + 360) % 360;
+  const tape = `translate(${(170 - hdg * HDG_PX).toFixed(1)} 0)`;
+  if (htMarks && tape !== shownTape) {
+    shownTape = tape;
+    htMarks.setAttribute('transform', tape);
   }
-  hdgFrame++;
+  const readout = String(Math.round(hdg) % 360).padStart(3, '0');
+  if (htReadout && readout !== shownReadout) {
+    shownReadout = readout;
+    htReadout.textContent = readout;
+  }
 }

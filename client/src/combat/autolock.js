@@ -67,6 +67,7 @@ export function createAutolock(world, audio, name = '') {
   let state = LOCK.CLEAR;
   let shownState = null;
   let shownRange = '';
+  let shownRadius = '';
 
   const eye = new THREE.Vector3(); // the suit's chase camera, local metres
   const chest = new THREE.Vector3(); // the suit itself: ranges read from here
@@ -160,7 +161,13 @@ export function createAutolock(world, audio, name = '') {
     const fit = DRONE_RADIUS * RETICLE_FIT * world.pxPerMetre(screen.z);
     const radius =
       Math.max(RETICLE_MIN_PX, Math.min(RETICLE_MAX_PX, fit)) * (state === LOCK.LOCKED ? RETICLE_TIGHT : 1);
-    els.root.style.setProperty('--r', `${radius.toFixed(1)}px`);
+    // --r sizes the ring through calc(), so writing it re-lays the reticle
+    // out; the radius only moves as the range changes, the position every frame.
+    const r = `${radius.toFixed(1)}px`;
+    if (r !== shownRadius) {
+      shownRadius = r;
+      els.root.style.setProperty('--r', r);
+    }
     els.root.style.transform = `translate3d(${screen.x.toFixed(1)}px, ${screen.y.toFixed(1)}px, 0)`;
   }
 

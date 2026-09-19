@@ -108,6 +108,16 @@ const GROUND_CLEARANCE = 4; // how far the suit floats above a surface at rest
 const SUIT_RADIUS = 4; // meters, for the forward obstacle ray
 const BUMP_COOLDOWN_MS = 700; // min gap between wall bounces
 const GPWS_ALT = 45; // AGL below which the "PULL UP" warning flashes
+// Each sensor read draws a sliver of the scene and reads its depth back, which
+// stalls the CPU until the GPU has finished everything queued — the single
+// most expensive thing the game loop does. So the floor under a suit is
+// sampled at full rate only when the floor is close: the sampling interval
+// stretches (up to SURFACE_RELAX x) with the time the suit would need to reach
+// it, keeping about SURFACE_SAMPLES_TO_FLOOR samples inside that time.
+const SURFACE_SAMPLES_TO_FLOOR = 8;
+const SURFACE_RELAX = 4;
+const MIN_CLOSING_SPEED = 10; // m/s, so a parked suit still re-samples
+const BUMP_MIN_SPEED = 6; // m/s: slower than this a wall never bounces the suit
 
 const REPULSOR_LIFE = 0.35; // seconds the blast ellipsoid lasts
 const BOUNDARY_WARN_COOLDOWN_MS = 2400;
@@ -482,6 +492,27 @@ function sampleFloor(viewer, s) {
   return h;
 }
 
+// How long a suit's cached floor height can be trusted, in ms.
+function surfaceInterval(s, sensors, baseMs) {
+  if (sensors.surface === undefined) return baseMs;
+  const margin = s.altitude - (sensors.surface + GROUND_CLEARANCE);
+  // Worst case the suit is sinking while roofs rise to meet it at 45 degrees.
+  const closing = Math.max(MIN_CLOSING_SPEED, Math.abs(s.speed) - s.vspeed);
+  const ms = ((margin / closing) * 1000) / SURFACE_SAMPLES_TO_FLOOR;
+  return Math.max(baseMs, Math.min(baseMs * SURFACE_RELAX, ms));
+}
+
+// Whether a sensor last read at `lastAt` may read again. Read-backs are
+// rationed to one a frame across every suit, so two never stack into a single
+// long frame; a sensor that has waited a whole extra interval goes regardless.
+let readbackFrame = -1; // timestamp of the frame that last paid for a read-back
+function claimReadback(now, lastAt, intervalMs) {
+  const late = now - lastAt - intervalMs;
+  if (late <= 0 || (readbackFrame === now && late < intervalMs)) return false;
+  readbackFrame = now;
+  return true;
+}
+
 // Keep a suit out of the ground and buildings. Contact costs momentum, never
 // health. Returns true when the suit just bounced off a wall.
 function collide(viewer, s, sensors, now, { surfaceMs = 50, forwardMs = 100 } = {}) {
@@ -489,7 +520,7 @@ function collide(viewer, s, sensors, now, { surfaceMs = 50, forwardMs = 100 } = 
   // Sampling the mesh is a GPU read-back that stalls the frame, so refresh the
   // surface height a few times a second and reuse it in between — the floor
   // still clamps every frame against the cached value.
-  if (now - sensors.sampledAt > surfaceMs) {
+  if (claimReadback(now, sensors.sampledAt, surfaceInterval(s, sensors, surfaceMs))) {
     sensors.sampledAt = now;
     const h = sampleFloor(viewer, s);
     if (h !== undefined) sensors.surface = h;
@@ -504,11 +535,12 @@ function collide(viewer, s, sensors, now, { surfaceMs = 50, forwardMs = 100 } = 
   }
 
   // 2) Forward wall: catch flying into the side of a building (throttled).
-  if (now - sensors.forwardAt <= forwardMs) return false;
+  // Nothing to cast for while a hit couldn't bounce the suit anyway.
+  if (Math.abs(s.speed) <= BUMP_MIN_SPEED || now < sensors.bumpUntil) return false;
+  if (!claimReadback(now, sensors.forwardAt, forwardMs)) return false;
   sensors.forwardAt = now;
   const lookAhead = Math.max(8, Math.abs(s.speed) * 0.2 + SUIT_RADIUS);
-  const obstacle = forwardObstacle(viewer, s, lookAhead, sensorExclude);
-  if (!obstacle || Math.abs(s.speed) <= 6 || now < sensors.bumpUntil) return false;
+  if (!forwardObstacle(viewer, s, lookAhead, sensorExclude)) return false;
   sensors.bumpUntil = now + BUMP_COOLDOWN_MS;
   // Bounce back off the wall.
   s.speed = -Math.abs(s.speed) * 0.2;
@@ -983,6 +1015,16 @@ async function boot() {
   });
   stdb.start();
 
+  // Cesium's canvas is resized from here (its own render loop is off), but
+  // only when the page says its size changed: asking every frame forces a
+  // synchronous layout, because the HUD has just been rewritten.
+  let resized = true;
+  const flagResize = () => {
+    resized = true;
+  };
+  new ResizeObserver(flagResize).observe(viewer.container);
+  window.addEventListener('resize', flagResize); // also fires on a device-pixel-ratio change
+
   // Game loop.
   let last = performance.now();
   function frame(now) {
@@ -1170,7 +1212,7 @@ async function boot() {
       // while we watch it, at a low rate (it's a GPU read-back).
       const w = watched.state;
       const sensors = watched.sensors;
-      if (watched.kind === 'track' && now - sensors.sampledAt > REMOTE_SURFACE_MS) {
+      if (watched.kind === 'track' && claimReadback(now, sensors.sampledAt, REMOTE_SURFACE_MS)) {
         sensors.sampledAt = now;
         const h = sampleFloor(viewer, w);
         if (h !== undefined) sensors.surface = h;
@@ -1210,7 +1252,10 @@ async function boot() {
 
     // Present both WebGL layers from this single frame. Cesium goes first and
     // the camera-relative Three suits are composited immediately after it.
-    viewer.resize();
+    if (resized) {
+      resized = false;
+      viewer.resize();
+    }
     viewer.render();
     overlay.render();
 

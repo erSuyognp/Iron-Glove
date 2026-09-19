@@ -34,14 +34,44 @@ const ENEMY_MISSILE = {
 const SPARKS = 90;
 const EXPLOSION_LIFE = 1.3; // s
 
+// Hull geometry and the white core material are the same for every missile of
+// a kind, so they are built once and shared (`userData.shared` keeps the world
+// layer from disposing them with the first missile that burns out).
+const hulls = new Map(); // length -> { core, shell }
+function hullFor(length) {
+  let hull = hulls.get(length);
+  if (!hull) {
+    hull = {
+      core: new THREE.CapsuleGeometry(0.28, length, 4, 10),
+      shell: new THREE.CapsuleGeometry(0.7, length * 1.15, 4, 10),
+    };
+    hull.core.userData.shared = hull.shell.userData.shared = true;
+    hulls.set(length, hull);
+  }
+  return hull;
+}
+const coreMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
+coreMaterial.userData.shared = true;
+
+function sparkMaterial(color) {
+  return new THREE.PointsMaterial({
+    map: getGlowTexture(),
+    color,
+    size: 5,
+    sizeAttenuation: true,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+}
+
 function missileMesh({ color, length }) {
   const group = new THREE.Group();
-  const core = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.28, length, 4, 10),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }),
-  );
+  const hull = hullFor(length);
+  const core = new THREE.Mesh(hull.core, coreMaterial);
   const shell = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.7, length * 1.15, 4, 10),
+    hull.shell,
     new THREE.MeshBasicMaterial({
       color,
       transparent: true,
@@ -112,25 +142,24 @@ export function createMissiles(world) {
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const sparks = new THREE.Points(
-      geometry,
-      new THREE.PointsMaterial({
-        map: getGlowTexture(),
-        color,
-        size: 5,
-        sizeAttenuation: true,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    );
+    const sparks = new THREE.Points(geometry, sparkMaterial(color));
     sparks.frustumCulled = false;
     const fireball = makeGlow(0xfff1c4, 10);
     const group = new THREE.Group();
     group.add(sparks, fireball);
     blasts.add({ age: 0, sparks, fireball, velocities, item: world.add(group, at.clone()) });
   }
+
+  // Shaders compile on first use, and Three frees a program when the last
+  // material using it is disposed. Missiles and blasts come and go, so without
+  // this the first launch, the first explosion, and the first of each after
+  // any lull would stall a frame mid-fight. One missile and one spark cloud,
+  // compiled now, never drawn and never disposed, keep those programs resident.
+  const resident = new THREE.Group();
+  const residentSparks = new THREE.BufferGeometry();
+  residentSparks.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3));
+  resident.add(missileMesh(PLAYER_MISSILE), new THREE.Points(residentSparks, sparkMaterial(0xffffff)));
+  world.warm(resident);
 
   function stepBlasts(dt) {
     for (const blast of blasts) {

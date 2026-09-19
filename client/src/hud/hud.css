@@ -43,6 +43,7 @@ html, body {
 /* Edge motion blur: blurs the canvas behind it, masked so the center stays
    sharp. The blur radius is driven from JS via backdrop-filter. */
 #speed-blur {
+  display: none; /* shown by hud.js only while there is speed to blur */
   backdrop-filter: blur(0px);
   -webkit-backdrop-filter: blur(0px);
   -webkit-mask-image: radial-gradient(ellipse 62% 62% at 50% 50%, transparent 42%, #000 88%);

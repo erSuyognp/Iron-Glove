@@ -61,6 +61,7 @@ export function distanceToSegment(p, a, b) {
  * @param viewer  the Cesium viewer whose camera the overlay mirrors
  * @returns {{
  *   add(object, local:THREE.Vector3): {object, local, remove()},
+ *   warm(object): void,
  *   toCamera(local, out): THREE.Vector3  // camera space: -Z ahead, +X right, +Y up
  *   project(local, out): boolean         // -> out.x/out.y in CSS px, out.z = metres ahead
  *   pxPerMetre(depth): number,
@@ -115,9 +116,17 @@ export function createWorldLayer(overlay, viewer) {
       remove() {
         layer.remove(root);
         items.delete(item);
+        // Free what this object owns. Assets marked `userData.shared` (a GLB
+        // template's meshes, the missile hulls) and Three's one sprite quad
+        // belong to everything still flying: disposing them would make the
+        // survivors re-upload their buffers and recompile their shaders on
+        // the next frame — a visible hitch on every kill.
         root.traverse((o) => {
-          o.geometry?.dispose();
-          o.material?.dispose?.(); // shared textures stay alive
+          if (o.geometry && !o.isSprite && !o.geometry.userData.shared) o.geometry.dispose();
+          const materials = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of materials) {
+            if (m && !m.userData.shared) m.dispose(); // textures stay alive
+          }
         });
       },
     };
@@ -150,6 +159,8 @@ export function createWorldLayer(overlay, viewer) {
   overlay.addObject(layer, prepare);
   return {
     add,
+    /** Compile an object's shaders now (see overlay.warm). */
+    warm: (object) => overlay.warm(object),
     toCamera,
     project,
     pxPerMetre: (depth) => size.fovScale / Math.max(1, depth),

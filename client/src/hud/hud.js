@@ -2,6 +2,17 @@
 
 const els = {};
 
+// What each element currently shows. Writing a text node or a style dirties
+// layout and repaints its glow even when the value is the same, and most
+// readouts hold still for many frames, so every per-frame write goes through
+// these and only touches the DOM on a change.
+const shownText = {};
+function setText(key, text) {
+  if (shownText[key] === text) return;
+  shownText[key] = text;
+  if (els[key]) els[key].textContent = text;
+}
+
 const HELP_KEYBOARD =
   `<span class="key">W</span> thrust
       <span class="key">S</span> brake
@@ -40,6 +51,7 @@ export function initHUD() {
   els.ammoPips = document.getElementById('hud-ammo-pips');
   els.lock = document.getElementById('hud-lock');
   els.combatFlash = document.getElementById('combat-flash');
+  els.gpws = document.getElementById('gpws');
 }
 
 // Drone combat readouts. c: { drones, ammo, maxAmmo, reload (0..1), lock }
@@ -156,29 +168,44 @@ export function flashRepulsor() {
 }
 
 // ratio: 0 (still) .. 1 (max speed). Ramps edge blur + vignette.
+const BLUR_STEP_PX = 0.25; // finer steps than this can't be seen
+let shownBlur = -1;
+let shownVignette = '';
 export function updateSpeedFx(ratio) {
   const r = Math.max(0, Math.min(1, ratio));
-  const px = (r * r * 12).toFixed(2); // ease-in, up to ~12px of edge blur
-  if (els.speedBlur) {
+  // Ease-in, up to ~12px of edge blur.
+  const px = Math.round((r * r * 12) / BLUR_STEP_PX) * BLUR_STEP_PX;
+  if (els.speedBlur && px !== shownBlur) {
+    // A backdrop filter re-filters the whole screen every frame for as long as
+    // the element exists, even at blur(0px), so it is taken out of the page
+    // entirely while there is nothing to blur.
+    if (px === 0 || shownBlur <= 0) els.speedBlur.style.display = px === 0 ? 'none' : 'block';
+    shownBlur = px;
     els.speedBlur.style.backdropFilter = `blur(${px}px)`;
     els.speedBlur.style.webkitBackdropFilter = `blur(${px}px)`;
   }
-  if (els.speedVignette) {
-    els.speedVignette.style.opacity = (r * 0.7).toFixed(3);
+  const opacity = (r * 0.7).toFixed(2);
+  if (els.speedVignette && opacity !== shownVignette) {
+    shownVignette = opacity;
+    els.speedVignette.style.opacity = opacity;
   }
 }
 
 // state: { altitude, speed, pitch, roll, heading, mode, health }
 export function updateHUD(state) {
-  if (els.alt) els.alt.textContent = state.altitude.toFixed(1);
-  if (els.spd) els.spd.textContent = state.speed.toFixed(1);
-  if (els.pitch) els.pitch.textContent = Math.round(state.pitch);
-  if (els.roll) els.roll.textContent = Math.round(state.roll);
-  if (els.hdg) els.hdg.textContent = Math.round(state.heading);
-  if (els.mode) els.mode.textContent = state.mode;
+  setText('alt', state.altitude.toFixed(1));
+  setText('spd', state.speed.toFixed(1));
+  setText('pitch', String(Math.round(state.pitch)));
+  setText('roll', String(Math.round(state.roll)));
+  setText('hdg', String(Math.round(state.heading)));
+  setText('mode', state.mode);
 
-  if (els.hp) els.hp.textContent = Math.round(state.health);
-  if (els.hpBar) els.hpBar.style.width = `${Math.max(0, Math.min(100, state.health))}%`;
+  setText('hp', String(Math.round(state.health)));
+  const hpWidth = `${Math.max(0, Math.min(100, state.health))}%`;
+  if (els.hpBar && shownText.hpBar !== hpWidth) {
+    shownText.hpBar = hpWidth;
+    els.hpBar.style.width = hpWidth;
+  }
 }
 
 // SpacetimeDB link status shown in the HUD (e.g. "ONLINE", "OFFLINE").
@@ -190,8 +217,11 @@ export function setJarvis(line) {
   if (els.jarvis && line) els.jarvis.textContent = line;
 }
 
+let gpwsShown = false;
 export function setGpws(active) {
-  const el = document.getElementById('gpws');
+  if (active === gpwsShown) return;
+  gpwsShown = active;
+  const el = els.gpws ?? document.getElementById('gpws');
   if (el) el.classList.toggle('active', active);
 }
 

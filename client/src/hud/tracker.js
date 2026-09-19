@@ -205,6 +205,7 @@ export function createTracker(overlay) {
   }
 
   let labelShown = false;
+  let labelOpacity = '';
   function placeLabel(visible, x = 0, y = 0) {
     if (!els.root) return;
     if (visible !== labelShown) {
@@ -213,7 +214,11 @@ export function createTracker(overlay) {
     }
     if (!visible) return;
     els.root.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translateY(-50%)`;
-    els.root.style.opacity = fade.toFixed(3);
+    const opacity = fade.toFixed(2);
+    if (opacity !== labelOpacity) {
+      labelOpacity = opacity;
+      els.root.style.opacity = opacity;
+    }
   }
 
   const scratch = new Cesium.Cartesian3();

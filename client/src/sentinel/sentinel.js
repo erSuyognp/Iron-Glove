@@ -125,9 +125,15 @@ export function createSentinelFleet(world, glbUrl) {
   let template = null; // { scene, animations } once the GLB (or fallback) is ready
 
   function adopt(scene, animations = []) {
+    // Every drone is a clone sharing the template's geometry and materials, so
+    // a drone that is removed must leave them alone (see world.add's remove).
     scene.traverse((o) => {
-      if (o.isMesh) o.frustumCulled = false;
+      if (!o.isMesh) return;
+      o.frustumCulled = false;
+      o.geometry.userData.shared = true;
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) m.userData.shared = true;
     });
+    world.warm(scene);
     template = { scene, animations };
     for (const drone of drones.values()) dress(drone);
   }
