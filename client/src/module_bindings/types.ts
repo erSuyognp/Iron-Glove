@@ -19,6 +19,20 @@ export const GameEvent = __t.object("GameEvent", {
 });
 export type GameEvent = __Infer<typeof GameEvent>;
 
+export const Missile = __t.object("Missile", {
+  missileId: __t.u64(),
+  sentinelId: __t.u32(),
+  targetPlayerId: __t.string(),
+  originX: __t.f64(),
+  originY: __t.f64(),
+  originZ: __t.f64(),
+  velocityX: __t.f32(),
+  velocityY: __t.f32(),
+  velocityZ: __t.f32(),
+  firedAt: __t.timestamp(),
+});
+export type Missile = __Infer<typeof Missile>;
+
 export const PlayerState = __t.object("PlayerState", {
   playerId: __t.string(),
   positionX: __t.f32(),
@@ -33,4 +47,36 @@ export const PlayerState = __t.object("PlayerState", {
   updatedAt: __t.timestamp(),
 });
 export type PlayerState = __Infer<typeof PlayerState>;
+
+export const SentinelRespawn = __t.object("SentinelRespawn", {
+  sentinelId: __t.u32(),
+  droneType: __t.string(),
+  respawnAt: __t.timestamp(),
+});
+export type SentinelRespawn = __Infer<typeof SentinelRespawn>;
+
+export const SentinelState = __t.object("SentinelState", {
+  sentinelId: __t.u32(),
+  droneType: __t.string(),
+  behavior: __t.string(),
+  positionX: __t.f64(),
+  positionY: __t.f64(),
+  positionZ: __t.f64(),
+  velocityX: __t.f32(),
+  velocityY: __t.f32(),
+  velocityZ: __t.f32(),
+  health: __t.f32(),
+  targetPlayerId: __t.string(),
+  patrolIndex: __t.u32(),
+  lastFiredAt: __t.timestamp(),
+  updatedAt: __t.timestamp(),
+});
+export type SentinelState = __Infer<typeof SentinelState>;
+
+export const SentinelTick = __t.object("SentinelTick", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  idleSince: __t.timestamp(),
+});
+export type SentinelTick = __Infer<typeof SentinelTick>;
 

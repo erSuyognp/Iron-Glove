@@ -2,13 +2,14 @@ import * as Cesium from 'cesium';
 import { initWorld, hasValidToken, getRenderQuality, JHU_HOMEWOOD } from './cesium/world.js';
 import { updateChaseCamera } from './cesium/camera.js';
 import { initHomewoodBoundary } from './cesium/homewood-boundary.js';
-import { initKeyboard, readAxes } from './input/keyboard.js';
+import { initKeyboard, readAxes, setSpaceFires, consumeFireKey } from './input/keyboard.js';
 import {
   connectGlove,
   setGloveConnectionHandler,
   isGloveConnected,
   readGloveAxes,
   consumeFist,
+  consumeFire,
   hasWebSerial,
 } from './input/glove.js';
 import {
@@ -28,7 +29,10 @@ import {
   setPovButton,
   onPovButton,
   setGfx,
+  updateCombatHud,
+  flashCombat,
 } from './hud/hud.js';
+import { createCombat } from './combat/combat.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
 import { createTracker } from './hud/tracker.js';
 import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
@@ -145,7 +149,22 @@ const JARVIS_LINES = {
     `A second suit has entered Homewood airspace, sir. ${name} is airborne — press V to take their view.`,
   pilotLeft: (name) => `${name}'s suit has gone quiet, sir.`,
   povLost: (name) => `Lost ${name}'s feed. Back on your suit, sir.`,
+  missileAway: ['Missile away.', 'Fox three, sir.', 'Missile tracking. Do try to look impressed.'],
+  rackEmpty: 'Missile rack is empty, sir. Reloading — ten seconds a round.',
+  kill: (type) =>
+    type === 'fleeing'
+      ? 'Runner down. It very nearly got away, sir.'
+      : 'Hostile drone destroyed. One fewer thing shooting at us.',
+  inbound: 'Missile inbound. I recommend being somewhere else, sir.',
+  struck: (hp) => `Direct hit. Suit integrity at ${Math.round(hp)} percent.`,
+  downed: 'Suit integrity lost. Rebooting over the quad, sir.',
+  droneBump: [
+    'That was a drone, sir. Ramming is not an approved weapon system.',
+    'Contact with a sentinel. No damage — to us, at least.',
+  ],
 };
+const DRONE_BUMP_COOLDOWN_MS = 2500;
+const INBOUND_COOLDOWN_MS = 6000;
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -204,6 +223,9 @@ let hoverBlend = 0; // 0..1 ease for the idle hover
 let hoverClock = 0; // seconds, advances the hover sine
 let homewoodBoundary = null;
 let boundaryWarnUntil = 0;
+let lockState = 'CLEAR'; // autolock state from the previous frame
+let droneBumpUntil = 0;
+let inboundWarnUntil = 0;
 
 // ---- SpacetimeDB state ----
 let stdb = null;
@@ -879,11 +901,27 @@ async function boot() {
     refreshPov();
   }
 
+  // Drones, autolock and missiles. The server flies the drones; rows arrive
+  // through the SpacetimeDB link below.
+  const combat = createCombat({ viewer, overlay, getLink: () => stdb });
+  function missileInbound(row, live) {
+    combat.onMissile(row, live);
+    if (live && row.targetPlayerId === PLAYER_ID && performance.now() >= inboundWarnUntil) {
+      inboundWarnUntil = performance.now() + INBOUND_COOLDOWN_MS;
+      setJarvis(JARVIS_LINES.inbound);
+    }
+  }
+
   // Dev: feed a player_state-shaped row as if it came from SpacetimeDB, to
-  // exercise remote suits and the POV switch without a phone.
+  // exercise remote suits and the POV switch without a phone. Likewise
+  // sentinel_state / missile rows for the drones.
   if (import.meta.env.DEV) {
     window.__pilots = pilots;
     window.__pilotRow = (row, live = true) => upsertPilot(row, live);
+    window.__combat = combat;
+    window.__sentinelRow = (row) => combat.onSentinel(row);
+    window.__sentinelGone = (sentinelId) => combat.onSentinelGone({ sentinelId });
+    window.__missileRow = (row) => missileInbound(row, true);
   }
 
   // SpacetimeDB link: mirror the client-computed transform into the DB and
@@ -909,6 +947,9 @@ async function boot() {
       if (row.playerId !== PLAYER_ID) upsertPilot(row, live);
     },
     onPlayerLeave: (row) => dropPilot(row.playerId),
+    onSentinel: combat.onSentinel,
+    onSentinelGone: combat.onSentinelGone,
+    onMissile: missileInbound,
   });
   stdb.start();
 
@@ -921,7 +962,12 @@ async function boot() {
 
     stepFlight(dt);
     if (collide(viewer, suit, localSensors, now)) setJarvis(pick(JARVIS_LINES.bump));
-    if (isGloveConnected() && consumeFist()) {
+    // Fire command: Space (only while a drone is locked) or a flick of the
+    // glove. A flick also reads as a fist, so with a lock it is the missile
+    // that goes, not the repulsor.
+    const gloveFire = isGloveConnected() && consumeFire();
+    const fire = consumeFireKey() || gloveFire;
+    if (isGloveConnected() && consumeFist() && !(gloveFire && lockState === 'LOCKED')) {
       triggerRepulsor(viewer);
     }
     stepRepulsor(viewer, now);
@@ -982,6 +1028,54 @@ async function boot() {
     localTag.show = Boolean(watched);
     // The blue tracker rides that same suit and points at the other pilot.
     tracker.update(watched ? watched.view : view, trackerTarget(watched, view), dt);
+
+    // --- Drone combat ---
+    // We judge everything that touches a suit flown here: ours and the phone
+    // pilots'. Weapons are ours alone, and only from our own camera.
+    const flown = [{ id: PLAYER_ID, state: suit }];
+    for (const pilot of pilots.values()) {
+      if (pilot.active && pilot.kind === 'sim' && pilot.state) flown.push({ id: pilot.id, state: pilot.state });
+    }
+    const battle = combat.update({ dt, suits: flown, ownView: !watched, fire });
+    lockState = battle.lock;
+    setSpaceFires(battle.lock === 'LOCKED');
+    updateCombatHud(battle);
+    if (battle.fired) setJarvis(pick(JARVIS_LINES.missileAway));
+    else if (battle.dry) setJarvis(JARVIS_LINES.rackEmpty);
+    for (const drone of battle.kills) {
+      flashCombat('kill');
+      setJarvis(JARVIS_LINES.kill(drone.type));
+    }
+    for (const hit of battle.hits) {
+      if (hit.id === PLAYER_ID) {
+        flashCombat('hit');
+        suit.health = Math.max(0, suit.health - hit.damage);
+        if (suit.health > 0) {
+          setJarvis(JARVIS_LINES.struck(suit.health));
+        } else {
+          // Shot down: reboot over the quad with a full rack. The server has
+          // already reset the row's health the same way.
+          suit = spawnState();
+          localSensors.surface = undefined;
+          trailClearNeeded = true;
+          combat.rearm();
+          setJarvis(JARVIS_LINES.downed);
+        }
+      } else {
+        const pilot = pilots.get(hit.id);
+        if (!pilot) continue;
+        pilot.health = Math.max(0, pilot.health - hit.damage);
+        if (pilot.health <= 0) {
+          // Shot down: reboots beside us (the server resets the row's health).
+          Object.assign(pilot.state, wingmanSpawn());
+          pilot.trail.clear();
+        }
+      }
+    }
+    if (battle.bumped.includes(PLAYER_ID) && now >= droneBumpUntil) {
+      droneBumpUntil = now + DRONE_BUMP_COOLDOWN_MS;
+      setJarvis(pick(JARVIS_LINES.droneBump));
+    }
 
     // Speed-driven feel: FOV punch, edge blur, and vignette all ramp together.
     const viewSpeed = watched ? watched.state.speed : suit.speed;
@@ -1060,7 +1154,10 @@ async function boot() {
     viewer.render();
     overlay.render();
 
-    if (import.meta.env.DEV) window.__suitView = view;
+    if (import.meta.env.DEV) {
+      window.__suitView = view;
+      window.__battle = battle;
+    }
 
     requestAnimationFrame(frame);
   }

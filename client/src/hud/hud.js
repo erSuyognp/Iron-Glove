@@ -8,11 +8,12 @@ const HELP_KEYBOARD =
       <span class="key">A</span>/<span class="key">D</span> yaw
       <span class="key">↑</span>/<span class="key">↓</span> climb / dive
       <span class="key">Q</span>/<span class="key">E</span> roll
-      <span class="key">Space</span> boost
+      <span class="key">Shift</span> boost
+      <span class="key">Space</span> boost · fire when locked
       <span class="key">R</span> reset`;
 
 const HELP_GLOVE =
-  `roll 160 climb · roll 0 dive · roll −120 thrust · pitch lean · fist blast
+  `roll 160 climb · roll 0 dive · roll −120 thrust · pitch lean · fist blast · flick to fire when locked
       <span class="key">R</span> reset`;
 
 export function initHUD() {
@@ -34,6 +35,54 @@ export function initHUD() {
   els.pov = document.getElementById('hud-pov');
   els.povBtn = document.getElementById('btn-pov');
   els.gfx = document.getElementById('hud-gfx');
+  els.drones = document.getElementById('hud-drones');
+  els.ammo = document.getElementById('hud-ammo');
+  els.ammoPips = document.getElementById('hud-ammo-pips');
+  els.lock = document.getElementById('hud-lock');
+  els.combatFlash = document.getElementById('combat-flash');
+}
+
+// Drone combat readouts. c: { drones, ammo, maxAmmo, reload (0..1), lock }
+const combatShown = {};
+export function updateCombatHud(c) {
+  if (els.drones && combatShown.drones !== c.drones) {
+    combatShown.drones = c.drones;
+    els.drones.textContent = c.drones;
+  }
+  if (els.lock && combatShown.lock !== c.lock) {
+    combatShown.lock = c.lock;
+    els.lock.textContent = c.lock;
+    els.lock.dataset.state = c.lock;
+  }
+  if (els.ammo && combatShown.ammo !== c.ammo) {
+    combatShown.ammo = c.ammo;
+    els.ammo.textContent = c.ammo;
+    els.ammo.classList.toggle('empty', c.ammo === 0);
+  }
+  if (els.ammoPips) {
+    // One pip per missile; the next one to reload fills up as it arrives.
+    if (els.ammoPips.childElementCount !== c.maxAmmo) {
+      els.ammoPips.innerHTML = '<i><b></b></i>'.repeat(c.maxAmmo);
+    }
+    const reloadPct = Math.round(c.reload * 100);
+    if (combatShown.pips !== c.ammo || combatShown.reload !== reloadPct) {
+      combatShown.pips = c.ammo;
+      combatShown.reload = reloadPct;
+      [...els.ammoPips.children].forEach((pip, i) => {
+        pip.firstChild.style.height = i < c.ammo ? '100%' : i === c.ammo ? `${reloadPct}%` : '0%';
+        pip.classList.toggle('full', i < c.ammo);
+      });
+    }
+  }
+}
+
+// kind: 'kill' (we destroyed a drone) | 'hit' (a missile struck the suit)
+export function flashCombat(kind) {
+  const el = els.combatFlash;
+  if (!el) return;
+  el.className = '';
+  void el.offsetWidth;
+  el.className = kind;
 }
 
 // Whose suit the camera is following.

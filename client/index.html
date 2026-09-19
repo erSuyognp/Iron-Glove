@@ -29,6 +29,16 @@
         <span class="hud-suit-label">SUIT</span>
         <span id="hud-suit-hp" class="hud-suit-hp">100</span>
         <div class="hud-bar"><div id="hud-suit-bar" class="hud-bar-fill"></div></div>
+        <!-- Drone combat readouts -->
+        <div class="hud-combat">
+          <div class="combat-row"><span class="combat-k">DRONES REMAINING</span><span id="hud-drones" class="combat-v">0</span></div>
+          <div class="combat-row">
+            <span class="combat-k">MISSILES</span>
+            <span id="hud-ammo-pips" class="ammo-pips"></span>
+            <span id="hud-ammo" class="combat-v">6</span>
+          </div>
+          <div class="combat-row"><span class="combat-k">TARGET</span><span id="hud-lock" class="combat-v lock" data-state="CLEAR">CLEAR</span></div>
+        </div>
       </div>
     </div>
 
@@ -64,6 +74,18 @@
       <span id="tracker-alt" class="tracker-alt"></span>
     </div>
 
+    <!-- Autolock reticle: follows the drone in the lock cone (combat/autolock.js) -->
+    <div id="reticle" class="reticle" data-state="TRACKING" hidden>
+      <div class="reticle-ring"></div>
+      <div class="reticle-label">
+        <span id="reticle-status" class="reticle-status">TRACKING</span>
+        <span id="reticle-range" class="reticle-range"></span>
+      </div>
+    </div>
+
+    <!-- Full-screen combat flash: drone kill (white-hot) / missile hit (red) -->
+    <div id="combat-flash"></div>
+
     <!-- Repulsor blast flash (fist gesture) -->
     <div id="repulsor-flash"></div>
 
@@ -80,7 +102,8 @@
       <span class="key">A</span>/<span class="key">D</span> yaw
       <span class="key">↑</span>/<span class="key">↓</span> climb / dive
       <span class="key">Q</span>/<span class="key">E</span> roll
-      <span class="key">Space</span> boost
+      <span class="key">Shift</span> boost
+      <span class="key">Space</span> boost · fire when locked
       <span class="key">R</span> reset
     </div>
   </div>

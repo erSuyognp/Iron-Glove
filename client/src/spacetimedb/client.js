@@ -5,8 +5,10 @@
 //   1. connects to the module and subscribes to the other pilots' rows in
 //      `player_state` (not our own, which would only echo what we push),
 //   2. calls join_game once on connect,
-//   3. pushes the client-computed transform via update_orientation, and
-//   4. hands every other pilot's row to the caller via a callback.
+//   3. pushes the client-computed transform via update_orientation,
+//   4. hands every other pilot's row to the caller via a callback, and
+//   5. streams the server-flown sentinel drones and their missiles, and
+//      reports hits back (apply_damage / destroy_sentinel).
 //
 // It fails soft: if the module is unreachable the game keeps running on local
 // physics and just reports an offline status.
@@ -32,12 +34,20 @@ function toWs(host) {
 // for a row that just changed on the server and false for a row delivered by
 // the initial subscription, which may be a leftover from an earlier session.
 // `onPlayerLeave` fires when a row is deleted.
+//
+// Drones: `onSentinel(row)` fires for every sentinel_state insert/update (one
+// per drone per 100 ms tick) and `onSentinelGone(row)` when one is destroyed.
+// `onMissile(row, live)` fires when an attacker launches; `live` is false for
+// missiles already in flight when we subscribed.
 export function createStdbClient({
   playerId = 'suyog',
   mode = 'KEYBOARD',
   onStatus,
   onPlayer,
   onPlayerLeave,
+  onSentinel,
+  onSentinelGone,
+  onMissile,
 } = {}) {
   let conn = null;
   let connected = false; // socket open
@@ -97,6 +107,20 @@ export function createStdbClient({
               c.subscriptionBuilder().onApplied(onApplied).subscribe(['SELECT * FROM player_state']);
             })
             .subscribe([others]);
+
+          // Sentinel drones and their missiles. A module published before the
+          // drones existed rejects this; the game then simply has no drones.
+          let combatApplied = false;
+          c.db.sentinelState.onInsert((_ctx, row) => onSentinel?.(row));
+          c.db.sentinelState.onUpdate((_ctx, _old, row) => onSentinel?.(row));
+          c.db.sentinelState.onDelete((_ctx, row) => onSentinelGone?.(row));
+          c.db.missile.onInsert((_ctx, row) => onMissile?.(row, combatApplied));
+          c.subscriptionBuilder()
+            .onApplied(() => {
+              combatApplied = true;
+            })
+            .onError(() => console.warn('[stdb] no sentinel tables on this module — drones offline'))
+            .subscribe(['SELECT * FROM sentinel_state', 'SELECT * FROM missile']);
         })
         .onDisconnect(() => {
           connected = false;
@@ -136,9 +160,23 @@ export function createStdbClient({
       .catch(reducerFailed('update_orientation'));
   }
 
+  // An attacker's missile reached a suit this client flies.
+  function applyDamage(targetId, amount) {
+    if (!conn || !subscribed) return;
+    conn.reducers.applyDamage({ targetId, amount }).catch(reducerFailed('apply_damage'));
+  }
+
+  // Our missile reached a drone: remove it (the server respawns one later).
+  function destroySentinel(sentinelId) {
+    if (!conn || !subscribed) return;
+    conn.reducers.destroySentinel({ sentinelId, playerId }).catch(reducerFailed('destroy_sentinel'));
+  }
+
   return {
     start,
     pushTransform,
+    applyDamage,
+    destroySentinel,
     get connected() {
       return connected;
     },

@@ -6,6 +6,13 @@
 const BAUD = 115200;
 const FIST_G = 1.5; // abs(ax) above this (in g) is a fist clench
 const FIST_COOLDOWN_MS = 500;
+// Missile trigger: a sharp flick of the hand. The accelerometer magnitude
+// sqrt(ax² + ay² + az²) sits near 1 g at rest; it has to stay above FIRE_G for
+// longer than FIRE_HOLD_MS — a single noisy sample never fires.
+const FIRE_G = 2.5;
+const FIRE_HOLD_MS = 30;
+const FIRE_COOLDOWN_MS = 500;
+const SAMPLE_MS = 20; // firmware streams at 50 Hz
 const MAX_BUFFER = 4096;
 
 let onGloveData = () => {};
@@ -18,6 +25,12 @@ let latest = { pitch: 0, roll: 0, ax: 0, ay: 0, az: 0, fist: false };
 let fistDown = false;
 let fistQueued = false;
 let fistCooldownUntil = 0;
+
+let jerkSince = 0; // when the magnitude first crossed FIRE_G (0 = below it)
+let jerkSamples = 0; // consecutive samples above it
+let jerkFired = false; // this spike already fired
+let fireQueued = false;
+let fireCooldownUntil = 0;
 
 export function setGloveHandler(fn) {
   onGloveData = fn || (() => {});
@@ -92,10 +105,42 @@ export function consumeFist() {
   return true;
 }
 
+// Missile fire command from the jerk trigger. True once per flick.
+export function consumeFire() {
+  if (!fireQueued) return false;
+  fireQueued = false;
+  return true;
+}
+
 function resetFist() {
   fistDown = false;
   fistQueued = false;
   fistCooldownUntil = 0;
+  jerkSince = 0;
+  jerkSamples = 0;
+  jerkFired = false;
+  fireQueued = false;
+  fireCooldownUntil = 0;
+}
+
+function noteJerk(sample, now) {
+  sample.jerk = Math.sqrt(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az);
+  if (sample.jerk <= FIRE_G) {
+    jerkSince = 0;
+    jerkSamples = 0;
+    jerkFired = false;
+    return;
+  }
+  if (!jerkSince) jerkSince = now;
+  jerkSamples++;
+  // Serial reads hand over several lines at once, all stamped with the same
+  // arrival time, so the spike's length is also counted in samples.
+  const heldMs = Math.max(now - jerkSince, (jerkSamples - 1) * SAMPLE_MS);
+  if (heldMs > FIRE_HOLD_MS && !jerkFired && now >= fireCooldownUntil) {
+    jerkFired = true;
+    fireQueued = true;
+    fireCooldownUntil = now + FIRE_COOLDOWN_MS;
+  }
 }
 
 function setConnected(value) {
@@ -135,6 +180,7 @@ function noteSample(sample) {
     fistCooldownUntil = now + FIST_COOLDOWN_MS;
   }
   fistDown = punching;
+  noteJerk(sample, now);
 
   latest = sample;
   onGloveData(sample);

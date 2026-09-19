@@ -232,6 +232,103 @@ html, body {
   100% { opacity: 0; }
 }
 
+/* ---------------- Drone combat ---------------- */
+.hud-combat {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.combat-row { display: flex; align-items: center; gap: 10px; }
+.combat-k { font-size: 10px; letter-spacing: 3px; opacity: 0.8; }
+.combat-v { min-width: 22px; font-size: 20px; font-weight: bold; text-align: right; }
+.combat-v.empty { color: var(--iron-red); text-shadow: 0 0 8px var(--iron-red); }
+.combat-v.lock { font-size: 14px; letter-spacing: 3px; }
+.combat-v.lock[data-state='TRACKING'] { color: #fff; text-shadow: 0 0 8px #ffffffaa; }
+.combat-v.lock[data-state='LOCKED'] {
+  color: var(--iron-red);
+  text-shadow: 0 0 10px var(--iron-red);
+  animation: gpws-blink 0.5s steps(1) infinite;
+}
+.ammo-pips { display: flex; gap: 3px; }
+.ammo-pips i {
+  width: 7px; height: 14px;
+  border: 1px solid var(--iron-cyan-dim);
+  background: #00121a;
+  display: flex;
+  align-items: flex-end;
+}
+.ammo-pips i b { display: block; width: 100%; height: 0; background: var(--iron-cyan-dim); }
+.ammo-pips i.full b { background: var(--iron-cyan); box-shadow: var(--hud-glow); }
+
+/* Autolock reticle — centred on the drone each frame; --r is its radius. */
+.reticle {
+  --r: 40px;
+  position: absolute;
+  top: 0; left: 0;
+  width: 0; height: 0;
+  will-change: transform;
+}
+.reticle[hidden] { display: none; }
+.reticle-ring {
+  position: absolute;
+  left: calc(var(--r) * -1);
+  top: calc(var(--r) * -1);
+  width: calc(var(--r) * 2);
+  height: calc(var(--r) * 2);
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.45), inset 0 0 12px rgba(255, 255, 255, 0.25);
+  animation: reticle-pulse 1.8s ease-in-out infinite;
+}
+@keyframes reticle-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50% { opacity: 0.95; transform: scale(1.07); }
+}
+.reticle[data-state='LOCKED'] .reticle-ring {
+  border: 2.5px solid var(--iron-red);
+  box-shadow: 0 0 14px var(--iron-red), inset 0 0 10px #ff3b3066;
+  animation: reticle-snap 0.16s ease-out;
+}
+/* The radius drops on lock; this is the snap from the wide tracking ring. */
+@keyframes reticle-snap {
+  0% { transform: scale(1.7); opacity: 0.6; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.reticle-label {
+  position: absolute;
+  left: calc(var(--r) + 10px);
+  top: 0;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: nowrap;
+  color: #fff;
+  text-shadow: 0 0 8px #ffffff88;
+}
+.reticle-status { font-size: 12px; font-weight: bold; letter-spacing: 3px; }
+.reticle-range { font-size: 10px; letter-spacing: 1px; opacity: 0.8; }
+.reticle[data-state='LOCKED'] .reticle-label { color: var(--iron-red); text-shadow: 0 0 10px var(--iron-red); }
+
+/* Full-screen combat flash: a drone kill (white-hot) or a missile hit (red). */
+#combat-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  opacity: 0;
+}
+#combat-flash.kill {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 244, 214, 0.85), rgba(255, 170, 60, 0.25) 55%, transparent 85%);
+  animation: repulsor-burst 0.45s ease-out;
+}
+#combat-flash.hit {
+  background: radial-gradient(ellipse at 50% 50%, transparent 35%, rgba(255, 40, 30, 0.6) 100%);
+  animation: repulsor-burst 0.6s ease-out;
+}
+
 /* Hardware action buttons (must receive clicks; HUD is pointer-events: none) */
 .hud-actions {
   position: static;

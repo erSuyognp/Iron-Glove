@@ -34,6 +34,8 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
+import ApplyDamageReducer from "./apply_damage_reducer";
+import DestroySentinelReducer from "./destroy_sentinel_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import UpdateOrientationReducer from "./update_orientation_reducer";
 
@@ -41,7 +43,9 @@ import UpdateOrientationReducer from "./update_orientation_reducer";
 
 // Import all table schema definitions
 import GameEventRow from "./game_event_table";
+import MissileRow from "./missile_table";
 import PlayerStateRow from "./player_state_table";
+import SentinelStateRow from "./sentinel_state_table";
 
 /** Type-only namespace exports for generated type groups. */
 
@@ -58,6 +62,17 @@ const tablesSchema = __schema({
       { name: 'game_event_event_id_key', constraint: 'unique', columns: ['eventId'] },
     ],
   }, GameEventRow),
+  missile: __table({
+    name: 'missile',
+    indexes: [
+      { accessor: 'missile_id', name: 'missile_missile_id_idx_btree', algorithm: 'btree', columns: [
+        'missileId',
+      ] },
+    ],
+    constraints: [
+      { name: 'missile_missile_id_key', constraint: 'unique', columns: ['missileId'] },
+    ],
+  }, MissileRow),
   playerState: __table({
     name: 'player_state',
     indexes: [
@@ -69,10 +84,23 @@ const tablesSchema = __schema({
       { name: 'player_state_player_id_key', constraint: 'unique', columns: ['playerId'] },
     ],
   }, PlayerStateRow),
+  sentinelState: __table({
+    name: 'sentinel_state',
+    indexes: [
+      { accessor: 'sentinel_id', name: 'sentinel_state_sentinel_id_idx_btree', algorithm: 'btree', columns: [
+        'sentinelId',
+      ] },
+    ],
+    constraints: [
+      { name: 'sentinel_state_sentinel_id_key', constraint: 'unique', columns: ['sentinelId'] },
+    ],
+  }, SentinelStateRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
+  __reducerSchema("apply_damage", ApplyDamageReducer),
+  __reducerSchema("destroy_sentinel", DestroySentinelReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("update_orientation", UpdateOrientationReducer),
 );
