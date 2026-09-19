@@ -235,7 +235,8 @@ export function createSentinelFleet(world, glbUrl) {
   }
 
   const target = new THREE.Vector3();
-  function update(dt, now = performance.now()) {
+  // `suits`: [{ mid: THREE.Vector3 }] — the pilots in the fight, for facing.
+  function update(dt, now = performance.now(), suits = []) {
     const k = 1 - Math.pow(1 - NET_LERP, dt * 60);
     const turn = 1 - Math.pow(1 - TURN_LERP, dt * 60);
     for (const drone of drones.values()) {
@@ -244,10 +245,20 @@ export function createSentinelFleet(world, glbUrl) {
       target.copy(drone.sample.pos).addScaledVector(drone.vel, lead);
       drone.pos.lerp(target, k);
 
-      // Face the way it flies and lean into it like a real quadcopter.
+      // Face the way it flies and lean into it like a real quadcopter — except
+      // an attacker holding station, which squares up to the pilot it is
+      // fighting (the nearest one) however it happens to be drifting.
       const ground = Math.hypot(drone.vel.x, drone.vel.y);
-      if (ground > 2) {
-        const want = Math.atan2(drone.vel.x, drone.vel.y);
+      let foe = null;
+      if (drone.behavior === 'ENGAGE') {
+        for (const suit of suits) {
+          if (!foe || suit.mid.distanceToSquared(drone.pos) < foe.distanceToSquared(drone.pos)) foe = suit.mid;
+        }
+      }
+      if (foe || ground > 2) {
+        const want = foe
+          ? Math.atan2(foe.x - drone.pos.x, foe.y - drone.pos.y)
+          : Math.atan2(drone.vel.x, drone.vel.y);
         const delta = Math.atan2(Math.sin(want - drone.heading), Math.cos(want - drone.heading));
         drone.heading += delta * turn;
         drone.body.rotation.y += (THREE.MathUtils.clamp(delta * 1.2, -0.6, 0.6) - drone.body.rotation.y) * turn;
@@ -255,7 +266,7 @@ export function createSentinelFleet(world, glbUrl) {
         drone.body.rotation.y *= 1 - turn;
       }
       drone.body.rotation.z = -drone.heading;
-      const tilt = -MAX_TILT * Math.min(1, ground / TILT_SPEED);
+      const tilt = foe ? 0 : -MAX_TILT * Math.min(1, ground / TILT_SPEED);
       drone.body.rotation.x += (tilt - drone.body.rotation.x) * turn;
 
       drone.mixer?.update(dt);

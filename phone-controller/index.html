@@ -38,6 +38,8 @@
     Wire format (update_orientation fields, mode = 'PHONE_CTRL'):
       pitch = throttle (-1..1, + = forward)   roll = turn (-1..1, + = right)
       yaw   = climb    (-1..1, + = up)        position_x = boost (0 | 1)
+      position_y = FIRE presses so far (a counter; the laptop runs the judge's
+                   autolock and launches a missile each time it rises)
     The laptop decodes the same layout in client/src/main.js.
 
     SpacetimeDB SDK: loaded from esm.sh (the unified `spacetimedb` 2.10 package,
@@ -251,7 +253,7 @@
       margin-top: 14px;
       display: none;
       grid-template-columns: 1fr 1fr;
-      grid-template-rows: 1fr 1fr;
+      grid-template-rows: 1fr 1fr auto;
       gap: 10px;
     }
     .pad.on { display: grid; }
@@ -283,6 +285,17 @@
       background: linear-gradient(180deg, rgba(245,184,61,0.12), rgba(245,184,61,0.02));
     }
     .hold.boost.down { background: rgba(245,184,61,0.3); box-shadow: 0 0 24px rgba(245,184,61,0.5); }
+    /* FIRE: a tap, not a hold. Launches a missile once the laptop shows LOCKED. */
+    .hold.fire {
+      grid-column: 1 / span 2;
+      min-height: 74px;
+      font-size: 20px;
+      letter-spacing: 8px;
+      color: #ff5a4e;
+      border-color: rgba(255,59,48,0.75);
+      background: linear-gradient(180deg, rgba(255,59,48,0.16), rgba(255,59,48,0.03));
+    }
+    .hold.fire.down { background: rgba(255,59,48,0.38); box-shadow: 0 0 26px rgba(255,59,48,0.6); }
 
     .footer { margin-top: auto; padding-top: 14px; display:flex; gap: 14px; align-items:center; font-size: 11px; letter-spacing: 2px; }
     .link { color: var(--dim); text-decoration: none; border-bottom: 1px dashed rgba(109,130,150,0.5); cursor: pointer; }
@@ -332,6 +345,7 @@
     <button class="hold boost" id="btn-boost">BOOST</button>
     <button class="hold" id="btn-climb">▲ CLIMB</button>
     <button class="hold" id="btn-dive">▼ DIVE</button>
+    <button class="hold fire" id="btn-fire">FIRE</button>
   </div>
 
   <div class="telem">
@@ -492,7 +506,7 @@
     const els = {
       activate: $("activate"), status: $("status"), hint: $("hint"),
       core: $("core"), coreLabel: $("core-label"), horizon: $("horizon"),
-      pad: $("pad"), boost: $("btn-boost"), climb: $("btn-climb"), dive: $("btn-dive"),
+      pad: $("pad"), boost: $("btn-boost"), climb: $("btn-climb"), dive: $("btn-dive"), fire: $("btn-fire"),
       thr: $("t-thr"), turn: $("t-turn"), clb: $("t-clb"), rate: $("t-rate"), boostOut: $("t-boost"),
       barThr: $("bar-thr"), barTurn: $("bar-turn"),
       calibrate: $("calibrate"), openConfig: $("open-config"),
@@ -569,6 +583,7 @@
     /* ---------- controls ---------- */
     const held = { climb: false, dive: false, boost: false };
     let controls = { throttle: 0, turn: 0, climb: 0, boost: 0 };
+    let shots = 0; // FIRE presses this session
 
     // Tilt in degrees -> axis: deadzone, then linear up to full at TILT_FULL.
     function axis(deg, min = -1) {
@@ -629,7 +644,7 @@
           roll: controls.turn,
           yaw: controls.climb,
           positionX: controls.boost,
-          positionY: 0,
+          positionY: shots,
           positionZ: 0,
           mode: MODE,
         })
@@ -662,6 +677,21 @@
     bindHold(els.boost, "boost");
     bindHold(els.climb, "climb");
     bindHold(els.dive, "dive");
+
+    // FIRE is a tap: each press bumps the counter and goes out at once. The
+    // laptop runs the judge's autolock and launches when it sees the count
+    // rise, so a press can't be lost between two sends the way a flag could.
+    els.fire.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      shots++;
+      els.fire.classList.add("down");
+      try { navigator.vibrate?.(30); } catch { /* not supported */ }
+      maybeSend(true);
+    });
+    for (const type of ["pointerup", "pointercancel", "pointerleave"]) {
+      els.fire.addEventListener(type, () => els.fire.classList.remove("down"));
+    }
+    els.fire.addEventListener("contextmenu", (e) => e.preventDefault());
 
     // Leaving the page (app switch, screen off) parks the suit in a hover.
     document.addEventListener("visibilitychange", () => {
@@ -813,7 +843,7 @@
       els.pad.classList.add("on");
       document.body.classList.add("active");
       els.hint.textContent =
-        "Tilt forward to fly · back to brake · left/right to turn · hold ▲ ▼ to climb or dive.";
+        "Tilt forward to fly · back to brake · left/right to turn · hold ▲ ▼ to climb or dive · hold a drone in your sights until LOCKED, then FIRE.";
       keepAwake();
       requestAnimationFrame(renderUi);
 

@@ -126,7 +126,8 @@ const NET_SEND_MS = 1000 / NET_SEND_HZ;
 const NET_LERP = 0.5;
 // Phones in this mode send control inputs, not positions, and we fly their
 // suit here (see the phone controller for the wire format):
-//   pitch = throttle, roll = turn, yaw = climb (all -1..1), position_x = boost
+//   pitch = throttle, roll = turn, yaw = climb (all -1..1), position_x = boost,
+//   position_y = FIRE presses so far (a counter, so a press is never missed)
 const CONTROL_MODE = 'PHONE_CTRL';
 // A remote pilot is live while its row keeps updating (phones send at least a
 // 1 Hz heartbeat). Rows that only arrive with the initial subscription are
@@ -155,6 +156,10 @@ const JARVIS_LINES = {
     type === 'fleeing'
       ? 'Runner down. It very nearly got away, sir.'
       : 'Hostile drone destroyed. One fewer thing shooting at us.',
+  wingmanFired: (name) => `${name} has a missile in the air, sir.`,
+  wingmanKill: (name, type) =>
+    type === 'fleeing' ? `${name} ran down a runner. Keep up, sir.` : `${name} just splashed a hostile drone.`,
+  wingmanDowned: (name) => `${name} has been shot down. Rebooting their suit beside you, sir.`,
   inbound: 'Missile inbound. I recommend being somewhere else, sir.',
   struck: (hp) => `Direct hit. Suit integrity at ${Math.round(hp)} percent.`,
   downed: 'Suit integrity lost. Rebooting over the quad, sir.',
@@ -579,6 +584,8 @@ function createPilot(viewer, overlay, id) {
     sensors: sensorState(), // collisions for 'sim'; AGL readout while watched
     // 'sim': the phone's latest control inputs.
     controls: { throttle: 0, yaw: 0, climb: 0, boost: false },
+    shots: undefined, // the phone's FIRE counter as last seen
+    fireQueued: false, // a FIRE press we haven't acted on yet
     hoverBlend: 0,
     // 'track': newest sample from the stream and the velocity between samples.
     sample: null,
@@ -617,6 +624,10 @@ function receivePilotRow(pilot, row, live) {
       climb: clampAxis(row.yaw),
       boost: row.positionX > 0.5,
     };
+    // A FIRE press bumps the counter. The first row only sets the baseline,
+    // and a reloaded phone page starts again from zero.
+    if (live && pilot.shots !== undefined && row.positionY > pilot.shots) pilot.fireQueued = true;
+    pilot.shots = row.positionY;
   } else {
     const sample = {
       longitude: row.positionX,
@@ -996,6 +1007,11 @@ async function boot() {
         yaw: suit.heading,
         mode: suit.mode,
       });
+      // Phone pilots only send stick inputs; we fly their suits, so we tell
+      // the server where they are and the drones can take them on as well.
+      for (const pilot of pilots.values()) {
+        if (pilot.active && pilot.kind === 'sim' && pilot.state) stdb.reportPosition(pilot.id, pilot.state);
+      }
     }
 
     // The local player is always rendered from the immediate client state.
@@ -1030,21 +1046,43 @@ async function boot() {
     tracker.update(watched ? watched.view : view, trackerTarget(watched, view), dt);
 
     // --- Drone combat ---
-    // We judge everything that touches a suit flown here: ours and the phone
-    // pilots'. Weapons are ours alone, and only from our own camera.
-    const flown = [{ id: PLAYER_ID, state: suit }];
+    // Every suit flown here fights: ours, and the phone pilots' (FIRE on the
+    // phone is their trigger). We judge everything that touches those suits.
+    const flown = [
+      { id: PLAYER_ID, name: displayName(PLAYER_ID), state: suit, local: true, onCamera: !watched, fire },
+    ];
     for (const pilot of pilots.values()) {
-      if (pilot.active && pilot.kind === 'sim' && pilot.state) flown.push({ id: pilot.id, state: pilot.state });
+      if (!pilot.active || pilot.kind !== 'sim' || !pilot.state) continue;
+      flown.push({
+        id: pilot.id,
+        name: pilot.name,
+        state: pilot.state,
+        local: false,
+        onCamera: pilot === watched,
+        fire: pilot.fireQueued,
+      });
+      pilot.fireQueued = false;
     }
-    const battle = combat.update({ dt, suits: flown, ownView: !watched, fire });
-    lockState = battle.lock;
-    setSpaceFires(battle.lock === 'LOCKED');
-    updateCombatHud(battle);
-    if (battle.fired) setJarvis(pick(JARVIS_LINES.missileAway));
-    else if (battle.dry) setJarvis(JARVIS_LINES.rackEmpty);
-    for (const drone of battle.kills) {
+    const battle = combat.update({ dt, suits: flown });
+    const mine = battle.pilots.get(PLAYER_ID);
+    lockState = mine.lock;
+    setSpaceFires(mine.lock === 'LOCKED');
+    // The combat readouts follow the camera, like the rest of the HUD.
+    const shown = (watched && battle.pilots.get(watched.id)) || mine;
+    updateCombatHud({ ...shown, drones: battle.drones });
+
+    if (mine.fired) setJarvis(pick(JARVIS_LINES.missileAway));
+    else if (mine.dry) setJarvis(JARVIS_LINES.rackEmpty);
+    for (const pilot of pilots.values()) {
+      if (battle.pilots.get(pilot.id)?.fired) setJarvis(JARVIS_LINES.wingmanFired(pilot.name));
+    }
+    for (const { drone, owner } of battle.kills) {
       flashCombat('kill');
-      setJarvis(JARVIS_LINES.kill(drone.type));
+      setJarvis(
+        owner === PLAYER_ID
+          ? JARVIS_LINES.kill(drone.type)
+          : JARVIS_LINES.wingmanKill(displayName(owner), drone.type),
+      );
     }
     for (const hit of battle.hits) {
       if (hit.id === PLAYER_ID) {
@@ -1058,21 +1096,24 @@ async function boot() {
           suit = spawnState();
           localSensors.surface = undefined;
           trailClearNeeded = true;
-          combat.rearm();
+          combat.rearm(PLAYER_ID);
           setJarvis(JARVIS_LINES.downed);
         }
       } else {
         const pilot = pilots.get(hit.id);
         if (!pilot) continue;
+        if (pilot === watched) flashCombat('hit');
         pilot.health = Math.max(0, pilot.health - hit.damage);
         if (pilot.health <= 0) {
           // Shot down: reboots beside us (the server resets the row's health).
           Object.assign(pilot.state, wingmanSpawn());
           pilot.trail.clear();
+          combat.rearm(pilot.id);
+          setJarvis(JARVIS_LINES.wingmanDowned(pilot.name));
         }
       }
     }
-    if (battle.bumped.includes(PLAYER_ID) && now >= droneBumpUntil) {
+    if (mine.bumped && now >= droneBumpUntil) {
       droneBumpUntil = now + DRONE_BUMP_COOLDOWN_MS;
       setJarvis(pick(JARVIS_LINES.droneBump));
     }
@@ -1156,7 +1197,7 @@ async function boot() {
 
     if (import.meta.env.DEV) {
       window.__suitView = view;
-      window.__battle = battle;
+      window.__battle = { ...mine, drones: battle.drones, kills: battle.kills, pilots: battle.pilots };
     }
 
     requestAnimationFrame(frame);

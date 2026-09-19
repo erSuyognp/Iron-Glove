@@ -312,6 +312,16 @@ html, body {
 .reticle-range { font-size: 10px; letter-spacing: 1px; opacity: 0.8; }
 .reticle[data-state='LOCKED'] .reticle-label { color: var(--iron-red); text-shadow: 0 0 10px var(--iron-red); }
 
+/* A phone pilot's reticle: amber while tracking, named so both pilots can aim
+   off the same screen. It still goes red on LOCKED. */
+.reticle-owner { font-size: 9px; letter-spacing: 3px; opacity: 0.85; }
+.reticle.wingman .reticle-label { left: auto; right: calc(var(--r) + 10px); align-items: flex-end; }
+.reticle.wingman:not([data-state='LOCKED']) .reticle-ring {
+  border-color: rgba(255, 176, 32, 0.9);
+  box-shadow: 0 0 12px rgba(255, 176, 32, 0.5), inset 0 0 12px rgba(255, 176, 32, 0.25);
+}
+.reticle.wingman:not([data-state='LOCKED']) .reticle-label { color: #ffb020; text-shadow: 0 0 8px #ffb02088; }
+
 /* Full-screen combat flash: a drone kill (white-hot) or a missile hit (red). */
 #combat-flash {
   position: absolute;

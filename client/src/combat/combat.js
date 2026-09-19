@@ -8,10 +8,12 @@ import { createSentinelFleet, DRONE_RADIUS } from '../sentinel/sentinel.js';
 // Drone combat, wired together for main.js.
 //
 // The server owns the drones (SentinelState, moved by tick_sentinels) and
-// decides when attackers fire. This client draws them between ticks, runs the
-// autolock and our missiles, and is the judge of anything that touches a suit
-// it flies: enemy missile hits (-> apply_damage) and drone contact, which is
-// physics only — a shove apart, never health.
+// decides when attackers fire. This client draws them between ticks and runs
+// the fight for every suit it flies — ours, and the phone pilots' (their phones
+// only send stick inputs and a FIRE button). Each of those suits has its own
+// autolock and missile rack here, and this client is the judge of anything
+// that touches them: enemy missile hits (-> apply_damage) and drone contact,
+// which is physics only — a shove apart, never health.
 // ---------------------------------------------------------------------------
 
 const MAX_AMMO = 6;
@@ -21,6 +23,7 @@ const SUIT_MID = 5.5; // m above the boots: mid-body, where hits and contact are
 const SUIT_RADIUS = 5;
 const CONTACT_M = SUIT_RADIUS + DRONE_RADIUS;
 const DRONE_GLB = '/drone.glb';
+const WINGMAN_MISSILE = 0xffb020; // phone pilots fire amber, like their jets
 
 /**
  * @param opts.viewer   Cesium viewer
@@ -32,99 +35,122 @@ export function createCombat({ viewer, overlay, getLink }) {
   const audio = createCombatAudio();
   const fleet = createSentinelFleet(world, DRONE_GLB);
   const missiles = createMissiles(world);
-  const autolock = createAutolock(world, audio);
 
-  let ammo = MAX_AMMO;
-  let reload = 0; // seconds into the current reload
+  // One weapon system per flown suit, made when the suit first shows up.
+  const weapons = new Map(); // suit id -> { autolock, ammo, reload, mid }
+  function weaponsFor(suit) {
+    let w = weapons.get(suit.id);
+    if (!w) {
+      w = {
+        autolock: createAutolock(world, audio, suit.local ? '' : suit.name),
+        ammo: MAX_AMMO,
+        reload: 0, // seconds into the current reload
+        mid: new THREE.Vector3(),
+      };
+      weapons.set(suit.id, w);
+    }
+    return w;
+  }
 
-  const mids = []; // reused [{ id, state, mid }]
   const apart = new THREE.Vector3();
   const muzzle = new THREE.Vector3();
 
-  function suitMids(suits) {
-    mids.length = suits.length;
-    suits.forEach((suit, i) => {
-      const entry = (mids[i] ??= { mid: new THREE.Vector3() });
-      entry.id = suit.id;
-      entry.state = suit.state;
-      toLocal(suit.state, entry.mid, SUIT_MID);
-    });
-    return mids;
-  }
-
   // Suits and drones are solid to each other. The server moves the drone out
   // of the way on its next tick; here the suit gives way too.
-  function shove(suits) {
-    const bumped = [];
-    for (const suit of suits) {
-      for (const drone of fleet.alive()) {
-        apart.subVectors(suit.mid, drone.pos);
-        const gap = apart.length();
-        if (gap >= CONTACT_M) continue;
-        if (gap > 0.01) apart.divideScalar(gap);
-        else apart.set(0, 0, 1);
-        nudgeGeo(suit.state, apart.multiplyScalar(CONTACT_M - gap));
-        suit.mid.add(apart);
-        suit.state.speed *= 0.6;
-        bumped.push(suit.id);
-      }
+  function shove(suit, mid) {
+    let bumped = false;
+    for (const drone of fleet.alive()) {
+      apart.subVectors(mid, drone.pos);
+      const gap = apart.length();
+      if (gap >= CONTACT_M) continue;
+      if (gap > 0.01) apart.divideScalar(gap);
+      else apart.set(0, 0, 1);
+      nudgeGeo(suit.state, apart.multiplyScalar(CONTACT_M - gap));
+      mid.add(apart);
+      suit.state.speed *= 0.6;
+      bumped = true;
     }
     return bumped;
   }
 
   /**
-   * One frame of combat. Call after the chase camera has been placed.
+   * One frame of combat.
    *
    * @param frame.dt
-   * @param frame.suits    [{ id, state }] flight states this client flies; [0] is ours
-   * @param frame.ownView  true while the camera is on our own suit
-   * @param frame.fire     a fire command arrived this frame (Space / glove)
+   * @param frame.suits  the suits this client flies:
+   *        [{ id, name, state, local, onCamera, fire }] — `state` is the flight
+   *        state, `local` marks our own suit, `onCamera` the one the chase
+   *        camera follows, `fire` a fire command that arrived this frame.
    * @returns {{
-   *   lock: string, drones: number, ammo: number, maxAmmo: number, reload: number,
-   *   fired: boolean, dry: boolean,   // dry: fire command with a lock but no missiles
-   *   kills: object[],                // drones we destroyed this frame
-   *   hits: {id: string, damage: number}[],
-   *   bumped: string[],
-   * }}
+   *   drones: number,
+   *   pilots: Map<id, { lock, ammo, maxAmmo, reload, fired, dry, bumped }>,
+   *   kills: { drone, owner }[],
+   *   hits: { id, damage }[],
+   * }}  `dry` = fire command with a lock but an empty rack
    */
-  function update({ dt, suits, ownView, fire }) {
+  function update({ dt, suits }) {
     const now = performance.now();
-    fleet.update(dt, now);
 
-    const bodies = suitMids(suits);
-    const bumped = shove(bodies);
+    const bodies = [];
+    const pilots = new Map();
+    for (const suit of suits) {
+      const w = weaponsFor(suit);
+      toLocal(suit.state, w.mid, SUIT_MID);
+      const bumped = shove(suit, w.mid);
+      bodies.push({ id: suit.id, mid: w.mid });
 
-    const lock = autolock.update(fleet.alive(), dt, ownView);
+      const lock = w.autolock.update(suit.state, fleet.alive(), dt, suit.onCamera);
 
-    if (ammo < MAX_AMMO) {
-      reload += dt;
-      if (reload >= RELOAD_SECONDS) {
-        reload = 0;
-        ammo++;
-      }
-    } else {
-      reload = 0;
-    }
-
-    let fired = false;
-    let dry = false;
-    if (fire && lock.state === LOCK.LOCKED) {
-      if (ammo > 0) {
-        ammo--;
-        fired = true;
-        missiles.launch(muzzle.copy(bodies[0].mid), lock.drone);
-        audio.launch();
+      if (w.ammo < MAX_AMMO) {
+        w.reload += dt;
+        if (w.reload >= RELOAD_SECONDS) {
+          w.reload = 0;
+          w.ammo++;
+        }
       } else {
-        dry = true;
+        w.reload = 0;
       }
+
+      let fired = false;
+      let dry = false;
+      if (suit.fire && lock.state === LOCK.LOCKED) {
+        if (w.ammo > 0) {
+          w.ammo--;
+          fired = true;
+          missiles.launch(muzzle.copy(w.mid), lock.drone, suit.id, suit.local ? undefined : WINGMAN_MISSILE);
+          if (suit.onCamera) audio.launch();
+        } else {
+          dry = true;
+        }
+      }
+
+      pilots.set(suit.id, {
+        lock: lock.state,
+        ammo: w.ammo,
+        maxAmmo: MAX_AMMO,
+        reload: w.ammo < MAX_AMMO ? w.reload / RELOAD_SECONDS : 0,
+        fired,
+        dry,
+        bumped,
+      });
     }
+
+    // A pilot who dropped off takes their reticle with them.
+    for (const [id, w] of weapons) {
+      if (pilots.has(id)) continue;
+      w.autolock.dispose();
+      weapons.delete(id);
+    }
+
+    // Attackers on station face the pilot they are fighting.
+    fleet.update(dt, now, bodies);
 
     const result = missiles.update(dt, bodies);
     const link = getLink();
-    for (const drone of result.kills) {
+    for (const { drone, owner } of result.kills) {
       fleet.kill(drone.id, now);
-      link?.destroySentinel(drone.id);
-      if (lock.drone === drone) autolock.clear();
+      link?.destroySentinel(drone.id, owner);
+      for (const w of weapons.values()) w.autolock.clear(drone);
       audio.explosion();
     }
     const hits = result.hits.map((id) => {
@@ -133,18 +159,7 @@ export function createCombat({ viewer, overlay, getLink }) {
       return { id, damage: MISSILE_DAMAGE };
     });
 
-    return {
-      lock: lock.state,
-      drones: fleet.remaining,
-      ammo,
-      maxAmmo: MAX_AMMO,
-      reload: ammo < MAX_AMMO ? reload / RELOAD_SECONDS : 0,
-      fired,
-      dry,
-      kills: result.kills,
-      hits,
-      bumped,
-    };
+    return { drones: fleet.remaining, pilots, kills: result.kills, hits };
   }
 
   return {
@@ -155,10 +170,12 @@ export function createCombat({ viewer, overlay, getLink }) {
     onMissile: (row, live) => {
       if (live) missiles.incoming(row);
     },
-    /** Full rack again (after a respawn). */
-    rearm() {
-      ammo = MAX_AMMO;
-      reload = 0;
+    /** Full rack again for one pilot (after a respawn). */
+    rearm(id) {
+      const w = weapons.get(id);
+      if (!w) return;
+      w.ammo = MAX_AMMO;
+      w.reload = 0;
     },
     fleet,
   };

@@ -1,14 +1,22 @@
 import * as THREE from 'three';
 import { DRONE_RADIUS } from '../sentinel/sentinel.js';
+import { toLocal } from './space.js';
+import { BACK_DISTANCE, UP_DISTANCE, PITCH_DOWN } from '../cesium/camera.js';
 
 // ---------------------------------------------------------------------------
 // Autolock — every frame, find the drone nearest the camera's forward vector
-// inside a 15° cone. While one is in the cone a soft white reticle pulses
-// around it (TRACKING); hold it there for 2 continuous seconds and the lock
-// confirms: the reticle snaps tight and red, the HUD reads LOCKED and the lock
-// tone sounds. Leaving the cone while TRACKING starts over; a confirmed lock
-// is stickier and holds until the drone leaves the wider HOLD_CONE, so an
-// orbiting attacker sweeping past the edge doesn't shake it off instantly.
+// inside a 15° cone. While one is in the cone a soft reticle pulses around it
+// (TRACKING); hold it there for 2 continuous seconds and the lock confirms:
+// the reticle snaps tight and red, the HUD reads LOCKED and the lock tone
+// sounds. Leaving the cone while TRACKING starts over; a confirmed lock is
+// stickier and holds until the drone leaves the wider HOLD_CONE, so a drone
+// sweeping past the edge doesn't shake it off instantly.
+//
+// Every pilot flown here has one — ours and the phone pilots'. "The camera" is
+// therefore the suit's own chase view, rebuilt from its flight state: exactly
+// the real camera for the suit on screen, and the view a phone pilot would
+// have for one that isn't. Each reticle is drawn wherever its drone appears on
+// the actual screen, so both pilots can aim off the same display.
 // ---------------------------------------------------------------------------
 
 const CONE = THREE.MathUtils.degToRad(15);
@@ -23,15 +31,35 @@ const RETICLE_MAX_PX = 130;
 
 export const LOCK = { CLEAR: 'CLEAR', TRACKING: 'TRACKING', LOCKED: 'LOCKED' };
 
+// A pilot's reticle: the page's own #reticle for the local pilot, a tinted
+// copy of it with a name tag for anyone else.
+function reticleFor(name) {
+  const own = document.getElementById('reticle');
+  if (!own || !name) return own;
+  const root = own.cloneNode(true);
+  root.removeAttribute('id');
+  for (const el of root.querySelectorAll('[id]')) el.removeAttribute('id');
+  root.classList.add('wingman');
+  root.hidden = true;
+  const tag = document.createElement('span');
+  tag.className = 'reticle-owner';
+  tag.textContent = name;
+  root.querySelector('.reticle-label').prepend(tag);
+  own.after(root);
+  return root;
+}
+
 /**
  * @param world  world layer from createWorldLayer
  * @param audio  lock tones from createCombatAudio
+ * @param name   shown on the reticle; omit for the local pilot
  */
-export function createAutolock(world, audio) {
+export function createAutolock(world, audio, name = '') {
+  const root = reticleFor(name);
   const els = {
-    root: document.getElementById('reticle'),
-    status: document.getElementById('reticle-status'),
-    range: document.getElementById('reticle-range'),
+    root,
+    status: root?.querySelector('.reticle-status'),
+    range: root?.querySelector('.reticle-range'),
   };
 
   let target = null; // drone in the cone
@@ -40,36 +68,52 @@ export function createAutolock(world, audio) {
   let shownState = null;
   let shownRange = '';
 
-  const cam = new THREE.Vector3();
+  const eye = new THREE.Vector3(); // the suit's chase camera, local metres
+  const chest = new THREE.Vector3(); // the suit itself: ranges read from here
+  const forward = new THREE.Vector3();
+  const toDrone = new THREE.Vector3();
   const screen = new THREE.Vector3();
+
+  // The chase view of a suit (see cesium/camera.js), in the local frame.
+  function aimFrom(suit) {
+    const heading = THREE.MathUtils.degToRad(suit.heading);
+    const east = Math.sin(heading);
+    const north = Math.cos(heading);
+    toLocal(suit, chest, 5.5);
+    toLocal(suit, eye, UP_DISTANCE);
+    eye.x -= east * BACK_DISTANCE;
+    eye.y -= north * BACK_DISTANCE;
+    forward.set(east * Math.cos(PITCH_DOWN), north * Math.cos(PITCH_DOWN), Math.sin(PITCH_DOWN));
+  }
 
   // Angle between the camera's forward vector and the drone's centre.
   function offAxis(drone) {
-    world.toCamera(drone.pos, cam);
-    const range = cam.length();
-    if (cam.z >= 0 || range > MAX_RANGE) return Infinity;
-    return Math.acos(Math.min(1, -cam.z / range));
+    toDrone.subVectors(drone.pos, eye);
+    const range = toDrone.length();
+    if (range < 1 || range > MAX_RANGE) return Infinity;
+    return Math.acos(THREE.MathUtils.clamp(toDrone.dot(forward) / range, -1, 1));
   }
 
   /**
+   * @param suit     flight state of the pilot this lock belongs to
    * @param drones   iterable of live drones
-   * @param enabled  false while the camera is on another pilot
+   * @param audible  play the lock tones (the pilot on camera)
    * @returns {{ state: string, drone: object|null }}
    */
-  function update(drones, dt, enabled = true) {
+  function update(suit, drones, dt, audible = true) {
+    aimFrom(suit);
+
+    // A drone being tracked keeps the reticle as long as it stays in the
+    // cone; otherwise take whichever is closest to the centre of the view.
     let best = null;
-    if (enabled) {
-      // A drone being tracked keeps the reticle as long as it stays in the
-      // cone; otherwise take whichever is closest to the centre of the view.
-      if (target?.alive && offAxis(target) <= (state === LOCK.LOCKED ? HOLD_CONE : CONE)) best = target;
-      else {
-        let bestAngle = CONE;
-        for (const drone of drones) {
-          const angle = offAxis(drone);
-          if (angle <= bestAngle) {
-            bestAngle = angle;
-            best = drone;
-          }
+    if (target?.alive && offAxis(target) <= (state === LOCK.LOCKED ? HOLD_CONE : CONE)) best = target;
+    else {
+      let bestAngle = CONE;
+      for (const drone of drones) {
+        const angle = offAxis(drone);
+        if (angle <= bestAngle) {
+          bestAngle = angle;
+          best = drone;
         }
       }
     }
@@ -84,10 +128,12 @@ export function createAutolock(world, audio) {
     const next = !target ? LOCK.CLEAR : held >= LOCK_SECONDS ? LOCK.LOCKED : LOCK.TRACKING;
     if (next !== state) {
       state = next;
-      if (state === LOCK.LOCKED) audio.lockConfirmed();
+      if (state === LOCK.LOCKED && audible) audio.lockConfirmed();
     }
-    if (state === LOCK.TRACKING) audio.tracking(dt, held / LOCK_SECONDS);
-    else if (state === LOCK.LOCKED) audio.locked(dt);
+    if (audible) {
+      if (state === LOCK.TRACKING) audio.tracking(dt, held / LOCK_SECONDS);
+      else if (state === LOCK.LOCKED) audio.locked(dt);
+    }
 
     place();
     return { state, drone: target };
@@ -104,7 +150,7 @@ export function createAutolock(world, audio) {
       els.root.dataset.state = state;
       els.status.textContent = state;
     }
-    const range = `${Math.round(screen.z)} m`;
+    const range = `${Math.round(chest.distanceTo(target.pos))} m`;
     if (range !== shownRange) {
       shownRange = range;
       els.range.textContent = range;
@@ -118,10 +164,16 @@ export function createAutolock(world, audio) {
 
   return {
     update,
-    /** Drop the lock (e.g. the drone was destroyed). */
-    clear() {
+    /** Drop the lock if it is on `drone` (it was destroyed). */
+    clear(drone) {
+      if (target !== drone) return;
       target = null;
       held = 0;
+    },
+    /** The pilot left: take the reticle with it. */
+    dispose() {
+      if (name) els.root?.remove();
+      else if (els.root) els.root.hidden = true;
     },
   };
 }

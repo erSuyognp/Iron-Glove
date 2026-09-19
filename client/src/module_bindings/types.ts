@@ -33,6 +33,16 @@ export const Missile = __t.object("Missile", {
 });
 export type Missile = __Infer<typeof Missile>;
 
+export const PilotPosition = __t.object("PilotPosition", {
+  playerId: __t.string(),
+  positionX: __t.f64(),
+  positionY: __t.f64(),
+  positionZ: __t.f64(),
+  heading: __t.f32(),
+  updatedAt: __t.timestamp(),
+});
+export type PilotPosition = __Infer<typeof PilotPosition>;
+
 export const PlayerState = __t.object("PlayerState", {
   playerId: __t.string(),
   positionX: __t.f32(),

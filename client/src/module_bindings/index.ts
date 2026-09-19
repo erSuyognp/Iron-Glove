@@ -37,6 +37,7 @@ import {
 import ApplyDamageReducer from "./apply_damage_reducer";
 import DestroySentinelReducer from "./destroy_sentinel_reducer";
 import JoinGameReducer from "./join_game_reducer";
+import ReportPositionReducer from "./report_position_reducer";
 import UpdateOrientationReducer from "./update_orientation_reducer";
 
 // Import all procedure arg schemas
@@ -102,6 +103,7 @@ const reducersSchema = __reducers(
   __reducerSchema("apply_damage", ApplyDamageReducer),
   __reducerSchema("destroy_sentinel", DestroySentinelReducer),
   __reducerSchema("join_game", JoinGameReducer),
+  __reducerSchema("report_position", ReportPositionReducer),
   __reducerSchema("update_orientation", UpdateOrientationReducer),
 );
 

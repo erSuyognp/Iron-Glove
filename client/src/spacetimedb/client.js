@@ -166,10 +166,26 @@ export function createStdbClient({
     conn.reducers.applyDamage({ targetId, amount }).catch(reducerFailed('apply_damage'));
   }
 
-  // Our missile reached a drone: remove it (the server respawns one later).
-  function destroySentinel(sentinelId) {
+  // A missile from a suit this client flies reached a drone: remove it (the
+  // server respawns one later). `by` is the pilot credited with the kill.
+  function destroySentinel(sentinelId, by = playerId) {
     if (!conn || !subscribed) return;
-    conn.reducers.destroySentinel({ sentinelId, playerId }).catch(reducerFailed('destroy_sentinel'));
+    conn.reducers.destroySentinel({ sentinelId, playerId: by }).catch(reducerFailed('destroy_sentinel'));
+  }
+
+  // Where a phone pilot's suit is. Phones only send stick inputs and we fly
+  // their suit, so we are the only ones who can tell the drones where it is.
+  function reportPosition(pilotId, s) {
+    if (!conn || !subscribed) return;
+    conn.reducers
+      .reportPosition({
+        playerId: pilotId,
+        positionX: s.longitude,
+        positionY: s.altitude,
+        positionZ: s.latitude,
+        heading: s.heading,
+      })
+      .catch(reducerFailed('report_position'));
   }
 
   return {
@@ -177,6 +193,7 @@ export function createStdbClient({
     pushTransform,
     applyDamage,
     destroySentinel,
+    reportPosition,
     get connected() {
       return connected;
     },

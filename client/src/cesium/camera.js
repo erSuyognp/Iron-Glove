@@ -3,9 +3,11 @@ import * as Cesium from 'cesium';
 // Third-person chase camera. Given the suit's geodetic position and heading,
 // place the camera behind and above it, looking forward.
 
-const BACK_DISTANCE = 90; // meters behind the suit
-const UP_DISTANCE = 30; // meters above the suit
-const PITCH_DOWN = Cesium.Math.toRadians(-12); // slight downward tilt
+// Exported: the autolock aims along this same view for every suit, on camera
+// or not (combat/autolock.js).
+export const BACK_DISTANCE = 90; // meters behind the suit
+export const UP_DISTANCE = 30; // meters above the suit
+export const PITCH_DOWN = Cesium.Math.toRadians(-12); // slight downward tilt
 
 export function updateChaseCamera(viewer, state) {
   const { longitude, latitude, altitude, heading } = state;

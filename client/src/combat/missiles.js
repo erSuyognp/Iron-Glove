@@ -72,11 +72,12 @@ export function createMissiles(world) {
   const axis = new THREE.Vector3();
   const prev = new THREE.Vector3();
 
-  function launch(from, drone) {
+  // `owner` is the id of the pilot who fired; it comes back with the kill.
+  function launch(from, drone, owner, color = PLAYER_MISSILE.color) {
     const pos = from.clone();
     const dir = aim.copy(drone.pos).sub(pos).normalize().clone();
-    const mesh = missileMesh(PLAYER_MISSILE);
-    const missile = { pos, dir, drone, age: 0, item: world.add(mesh, pos), mesh };
+    const mesh = missileMesh({ ...PLAYER_MISSILE, color });
+    const missile = { pos, dir, drone, owner, age: 0, item: world.add(mesh, pos), mesh };
     mesh.quaternion.setFromUnitVectors(UP, dir);
     ours.add(missile);
   }
@@ -164,7 +165,7 @@ export function createMissiles(world) {
   /**
    * Advance everything one frame.
    * @param suits  [{ id, mid: THREE.Vector3 }] suits this client flies (mid-body, local metres)
-   * @returns {{ kills: drone[], hits: string[] }} drones we destroyed and suit ids that were struck
+   * @returns {{ kills: {drone, owner}[], hits: string[] }} drones destroyed (and by whom), suit ids struck
    */
   function update(dt, suits) {
     const kills = [];
@@ -197,7 +198,8 @@ export function createMissiles(world) {
       const struck = drone?.alive && distanceToSegment(drone.pos, prev, m.pos) <= PLAYER_MISSILE.hitRadius;
       if (struck) {
         explode(drone.pos);
-        kills.push(drone);
+        drone.alive = false; // a second missile already in the air flies on past
+        kills.push({ drone, owner: m.owner });
       }
       if (struck || m.age >= PLAYER_MISSILE.life) {
         if (!struck) explode(m.pos, PLAYER_MISSILE.color);

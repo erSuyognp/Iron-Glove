@@ -71,7 +71,7 @@ const sentinelState = table(
   {
     sentinel_id: t.u32().primaryKey(),
     drone_type: t.string(), // "attacker" | "fleeing"
-    behavior: t.string(), //   "PATROL" | "CHASE" | "ORBIT" | "FLEE"
+    behavior: t.string(), //   "PATROL" | "CHASE" | "ENGAGE" | "FLEE"
     position_x: t.f64(),
     position_y: t.f64(),
     position_z: t.f64(),
@@ -106,6 +106,21 @@ const missile = table(
   }
 );
 
+// Where a phone pilot's suit actually is. A phone in PHONE_CTRL only sends
+// stick inputs through player_state (the laptop flies its suit), so the laptop
+// reports the suit's position here and the drones can find and fight it.
+const pilotPosition = table(
+  { name: "pilot_position" },
+  {
+    player_id: t.string().primaryKey(),
+    position_x: t.f64(),
+    position_y: t.f64(),
+    position_z: t.f64(),
+    heading: t.f32(), // degrees, 0 = north
+    updated_at: t.timestamp(),
+  }
+);
+
 // Destroyed drones waiting to come back (private).
 const sentinelRespawn = table(
   { name: "sentinel_respawn" },
@@ -131,6 +146,7 @@ const spacetimedb = schema({
   gameEvent,
   sentinelState,
   missile,
+  pilotPosition,
   sentinelRespawn,
   sentinelTick,
 });
@@ -197,6 +213,23 @@ export const update_orientation = spacetimedb.reducer(
   }
 );
 
+// report_position — the client flying a phone pilot's suit says where it is.
+// Pure setter, like update_orientation.
+export const report_position = spacetimedb.reducer(
+  {
+    player_id: t.string(),
+    position_x: t.f64(),
+    position_y: t.f64(),
+    position_z: t.f64(),
+    heading: t.f32(),
+  },
+  (ctx, p) => {
+    const row = { ...p, updated_at: ctx.timestamp };
+    if (ctx.db.pilotPosition.player_id.find(p.player_id)) ctx.db.pilotPosition.player_id.update(row);
+    else ctx.db.pilotPosition.insert(row);
+  }
+);
+
 // apply_damage — deduct suit health. Called by the client that flies the suit
 // when an attacker's missile reaches it (that client is authoritative for the
 // suit's position, so it is the only one that can judge the hit fairly).
@@ -250,10 +283,13 @@ const FLEE_SPEED = PLAYER_MAX_SPEED * 1.2;
 const PATROL_SPEED = PLAYER_MAX_SPEED * 0.3;
 const STEER_RATE = 2.5; // 1/s: how quickly velocity swings to a new heading
 
-const ORBIT_ENTER_M = 80; // attackers start circling inside this range...
-const ORBIT_EXIT_M = 100; // ...and resume the chase beyond this one
-const ORBIT_RADIUS_M = 40;
-const ORBIT_HEIGHT_M = 8; // circle slightly above the suit
+const REPOSITION_SPEED = PLAYER_MAX_SPEED * 1.5; // an attacker caught behind its pilot hurries back round
+const ENGAGE_AHEAD_M = 110; // attackers hold station this far off the pilot's nose
+const ENGAGE_OFFSET_DEG = 14; // ...to one side of it (wingmen take opposite sides)
+const ENGAGE_SWAY_DEG = 7; //   ...drifting slowly across it
+const ENGAGE_HEIGHT_M = 12; //  ...a little above eye level
+const ENGAGE_SETTLED_M = 30; // this close to the station counts as holding it
+const FRONT_ARC_DEG = 50; // attackers only fire from inside this arc off the nose
 const FIRE_INTERVAL_S = 4;
 const FIRE_RANGE_M = 250;
 const MISSILE_SPEED = 120; // m/s, straight line
@@ -307,6 +343,7 @@ const HOMEWOOD = [
 ].map(([lon, lat]) => [(lon - SPAWN_X) * M_PER_LON, (lat - SPAWN_Z) * M_PER_LAT]);
 
 type Vec = { e: number; n: number; u: number };
+type Pilot = { id: string; pos: Vec; heading: number }; // heading in radians, 0 = north
 
 function insideHomewood(e: number, n: number): boolean {
   let inside = false;
@@ -409,14 +446,28 @@ export const tick_sentinels = spacetimedb.reducer(
   (ctx, { tick }) => {
     const now = ctx.timestamp;
 
-    // Pilots who are actually flying. Phones in PHONE_CTRL send stick inputs,
-    // not positions (the laptop flies their suit), so they cannot be targeted.
-    const pilots: { id: string; pos: Vec }[] = [];
+    // Pilots who are actually flying, in a stable order. Phones in PHONE_CTRL
+    // send stick inputs, not positions; theirs comes from pilot_position.
+    const pilots: Pilot[] = [];
     for (const p of ctx.db.playerState.iter()) {
-      if (p.mode === "PHONE_CTRL" || !p.is_connected) continue;
-      if (secondsBetween(now, p.updated_at) > PLAYER_LIVE_S) continue;
-      pilots.push({ id: p.player_id, pos: toLocal(p.position_x, p.position_z, p.position_y) });
+      if (!p.is_connected || secondsBetween(now, p.updated_at) > PLAYER_LIVE_S) continue;
+      if (p.mode === "PHONE_CTRL") {
+        const at = ctx.db.pilotPosition.player_id.find(p.player_id);
+        if (!at || secondsBetween(now, at.updated_at) > PLAYER_LIVE_S) continue;
+        pilots.push({
+          id: p.player_id,
+          pos: toLocal(at.position_x, at.position_z, at.position_y),
+          heading: (at.heading * Math.PI) / 180,
+        });
+      } else {
+        pilots.push({
+          id: p.player_id,
+          pos: toLocal(p.position_x, p.position_z, p.position_y),
+          heading: (p.yaw * Math.PI) / 180,
+        });
+      }
     }
+    pilots.sort((a, b) => (a.id < b.id ? -1 : 1));
 
     // Park the tick when the sky has been empty for a while.
     if (pilots.length > 0) {
@@ -443,7 +494,7 @@ export const tick_sentinels = spacetimedb.reducer(
       const pos = toLocal(d.position_x, d.position_z, d.position_y);
       let vel: Vec = { e: d.velocity_x, n: d.velocity_z, u: d.velocity_y };
 
-      let nearest: { id: string; pos: Vec } | null = null;
+      let nearest: Pilot | null = null;
       let range = Infinity;
       for (const p of pilots) {
         const r = len(sub(p.pos, pos));
@@ -459,26 +510,41 @@ export const tick_sentinels = spacetimedb.reducer(
       let want: Vec;
 
       if (nearest && d.drone_type === "attacker") {
-        const toPilot = sub(nearest.pos, pos);
-        const orbiting = range < (d.behavior === "ORBIT" ? ORBIT_EXIT_M : ORBIT_ENTER_M);
-        if (orbiting) {
-          // Circle at ORBIT_RADIUS_M: fly the tangent, corrected in or out
-          // toward the ring, holding station just above the suit.
-          behavior = "ORBIT";
-          const flat = Math.hypot(toPilot.e, toPilot.n) || 1;
-          const out = { e: -toPilot.e / flat, n: -toPilot.n / flat };
-          const radial = Math.max(-1, Math.min(1, (ORBIT_RADIUS_M - flat) / (ORBIT_RADIUS_M * 0.25)));
-          const climb = Math.max(-1, Math.min(1, (toPilot.u + ORBIT_HEIGHT_M) / 20));
-          const spin = d.sentinel_id % 2 === 0 ? 1 : -1; // wingmen circle opposite ways
-          want = withLength(
-            { e: -out.n * spin + out.e * radial, n: out.e * spin + out.n * radial, u: climb * 0.6 },
-            ATTACK_SPEED
-          );
-        } else {
-          behavior = "CHASE";
-          want = withLength(toPilot, ATTACK_SPEED);
+        // With two pilots up the attackers split, one each, instead of both
+        // mobbing whoever is closer.
+        if (pilots.length > 1) {
+          nearest = pilots[d.sentinel_id % pilots.length];
+          range = len(sub(nearest.pos, pos));
         }
-        if (range <= FIRE_RANGE_M && secondsBetween(now, last_fired_at) >= FIRE_INTERVAL_S) {
+        const toPilot = sub(nearest.pos, pos);
+
+        // Attackers fight face to face. Each takes up station ahead of the
+        // pilot's nose — a little to one side so wingmen don't stack, swaying
+        // slowly so it is a live target — and only shoots from inside the
+        // pilot's frontal arc. A drone that ends up behind (the pilot turned,
+        // or flew past it) sprints back round to the front, holding fire.
+        const side = d.sentinel_id % 2 === 0 ? 1 : -1;
+        const seconds = Number(now.microsSinceUnixEpoch % 3_600_000_000n) / 1e6;
+        const sway = Math.sin(seconds * 0.7 + d.sentinel_id) * ENGAGE_SWAY_DEG;
+        const bearing = nearest.heading + ((side * ENGAGE_OFFSET_DEG + sway) * Math.PI) / 180;
+        const station: Vec = {
+          e: nearest.pos.e + Math.sin(bearing) * ENGAGE_AHEAD_M,
+          n: nearest.pos.n + Math.cos(bearing) * ENGAGE_AHEAD_M,
+          u: nearest.pos.u + ENGAGE_HEIGHT_M,
+        };
+        const toStation = sub(station, pos);
+        const offStation = len(toStation);
+
+        // How far off the pilot's nose the drone sits (0 = dead ahead).
+        const flat = Math.hypot(toPilot.e, toPilot.n) || 1;
+        const ahead = (-toPilot.e * Math.sin(nearest.heading) - toPilot.n * Math.cos(nearest.heading)) / flat;
+        const inFront = ahead >= Math.cos((FRONT_ARC_DEG * Math.PI) / 180);
+
+        behavior = inFront && offStation < ENGAGE_SETTLED_M ? "ENGAGE" : "CHASE";
+        const top = inFront ? ATTACK_SPEED : REPOSITION_SPEED;
+        want = withLength(toStation, Math.min(top, offStation * 1.5)); // ease onto the station
+
+        if (inFront && range <= FIRE_RANGE_M && secondsBetween(now, last_fired_at) >= FIRE_INTERVAL_S) {
           last_fired_at = now;
           const shot = withLength(toPilot, MISSILE_SPEED);
           ctx.db.missile.insert({
