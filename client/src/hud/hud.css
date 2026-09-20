@@ -412,6 +412,9 @@ html, body {
   text-shadow: 0 0 10px var(--iron-red);
   animation: gpws-blink 0.5s steps(1) infinite;
 }
+.hud-ai-debug { display: none; }
+.hud[data-ai-debug='1'] .hud-ai-debug { display: flex; }
+.hud-ai-debug .combat-v { font-size: 11px; letter-spacing: 1px; font-weight: 700; }
 .ammo-pips { display: flex; gap: 3px; }
 .ammo-pips i {
   width: 7px; height: 14px;

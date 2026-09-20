@@ -26,6 +26,7 @@
 
 import { schema, table, t } from "spacetimedb/server";
 import { ScheduleAt, Timestamp } from "spacetimedb";
+import { commandSentinel, missionSiteId, missionUsesRl } from "./sentinelPolicy";
 
 // Spawn point: above the JHU Homewood quad (Keyser Quad).
 // The client works in lon/lat/alt; the repo convention (from the plan's
@@ -313,6 +314,9 @@ export const activate_mission = spacetimedb.reducer(
     FLEET.forEach((slot, id) => spawnSentinel(ctx, area, id, slot.drone_type, slot.waypoint));
     ensureTick(ctx);
     logEvent(ctx, "MISSION", "", `activated at ${p.site}`);
+    // `site` may be tagged `id|rl` (see client AI_FEATURES.rlSentinel). That is
+    // an extension point only — no new tables. missionSiteId() strips the tag
+    // for campus geometry; missionUsesRl() selects the exported attacker policy.
   }
 );
 
@@ -401,7 +405,24 @@ const HOMEWOOD = [
 ];
 
 type Vec = { e: number; n: number; u: number };
-type Pilot = { id: string; pos: Vec; heading: number }; // heading in radians, 0 = north
+type Pilot = { id: string; pos: Vec; vel: Vec; heading: number; health: number }; // heading in radians, 0 = north
+
+// Player velocity is not a column — estimate it from the last tick's position
+// so the RL observation has dv* without a schema change.
+const lastPilotSample = new Map<string, { pos: Vec; micros: bigint }>();
+
+function estimatePilotVel(id: string, pos: Vec, nowMicros: bigint): Vec {
+  const prev = lastPilotSample.get(id);
+  lastPilotSample.set(id, { pos: { e: pos.e, n: pos.n, u: pos.u }, micros: nowMicros });
+  if (!prev) return { e: 0, n: 0, u: 0 };
+  const dt = Number(nowMicros - prev.micros) / 1e6;
+  if (!(dt > 0.02) || dt > 1) return { e: 0, n: 0, u: 0 };
+  return {
+    e: (pos.e - prev.pos.e) / dt,
+    n: (pos.n - prev.pos.n) / dt,
+    u: (pos.u - prev.pos.u) / dt,
+  };
+}
 
 // A mission's airspace: the local frame around its centre, the perimeter and
 // the patrol route, all in that frame's metres.
@@ -429,7 +450,7 @@ function areaOf(m: {
     n: (lat - m.center_lat) * M_PER_LAT,
     u: alt + m.alt_offset,
   });
-  const campus = m.site === "jhu";
+  const campus = missionSiteId(m.site) === "jhu";
   return {
     lon: m.center_lon,
     lat: m.center_lat,
@@ -579,16 +600,29 @@ export const tick_sentinels = spacetimedb.reducer(
           id: p.player_id,
           pos: toLocal(area, at.position_x, at.position_z, at.position_y),
           heading: (at.heading * Math.PI) / 180,
+          health: p.suit_health,
+          vel: { e: 0, n: 0, u: 0 },
         });
       } else {
         pilots.push({
           id: p.player_id,
           pos: toLocal(area, p.position_x, p.position_z, p.position_y),
           heading: (p.yaw * Math.PI) / 180,
+          health: p.suit_health,
+          vel: { e: 0, n: 0, u: 0 },
         });
       }
     }
     pilots.sort((a, b) => (a.id < b.id ? -1 : 1));
+    const nowMicros = now.microsSinceUnixEpoch;
+    const liveIds = new Set<string>();
+    for (const p of pilots) {
+      p.vel = estimatePilotVel(p.id, p.pos, nowMicros);
+      liveIds.add(p.id);
+    }
+    for (const id of lastPilotSample.keys()) {
+      if (!liveIds.has(id)) lastPilotSample.delete(id);
+    }
 
     // Stand the mission down when the sky has been empty for a while, so the
     // next session starts clear.
@@ -639,48 +673,85 @@ export const tick_sentinels = spacetimedb.reducer(
           range = len(sub(nearest.pos, pos));
         }
         const toPilot = sub(nearest.pos, pos);
-
-        // Attackers fight face to face. Each takes up station ahead of the
-        // pilot's nose — a little to one side so wingmen don't stack, swaying
-        // slowly so it is a live target — and only shoots from inside the
-        // pilot's frontal arc. A drone that ends up behind (the pilot turned,
-        // or flew past it) sprints back round to the front, holding fire.
-        const side = d.sentinel_id % 2 === 0 ? 1 : -1;
-        const seconds = Number(now.microsSinceUnixEpoch % 3_600_000_000n) / 1e6;
-        const sway = Math.sin(seconds * 0.7 + d.sentinel_id) * ENGAGE_SWAY_DEG;
-        const bearing = nearest.heading + ((side * ENGAGE_OFFSET_DEG + sway) * Math.PI) / 180;
-        const station: Vec = {
-          e: nearest.pos.e + Math.sin(bearing) * ENGAGE_AHEAD_M,
-          n: nearest.pos.n + Math.cos(bearing) * ENGAGE_AHEAD_M,
-          u: nearest.pos.u + ENGAGE_HEIGHT_M,
-        };
-        const toStation = sub(station, pos);
-        const offStation = len(toStation);
-
-        // How far off the pilot's nose the drone sits (0 = dead ahead).
         const flat = Math.hypot(toPilot.e, toPilot.n) || 1;
         const ahead = (-toPilot.e * Math.sin(nearest.heading) - toPilot.n * Math.cos(nearest.heading)) / flat;
         const inFront = ahead >= Math.cos((FRONT_ARC_DEG * Math.PI) / 180);
 
-        behavior = inFront && offStation < ENGAGE_SETTLED_M ? "ENGAGE" : "CHASE";
-        const top = inFront ? ATTACK_SPEED : REPOSITION_SPEED;
-        want = withLength(toStation, Math.min(top, offStation * 1.5)); // ease onto the station
+        if (missionUsesRl(current.site)) {
+          // Offline-trained policy (or explicit heuristic artifact). Fire is a
+          // candidate only; cooldown, range and the player's frontal arc still
+          // gate the missile row. Health is never written here.
+          const cmd = commandSentinel(
+            pos,
+            vel,
+            d.health,
+            nearest.pos,
+            nearest.vel,
+            nearest.heading,
+            nearest.health,
+            secondsBetween(now, last_fired_at),
+          );
+          want = cmd.want;
+          behavior = inFront && range <= FIRE_RANGE_M ? "ENGAGE" : "CHASE";
+          if (
+            cmd.fire &&
+            inFront &&
+            range <= FIRE_RANGE_M &&
+            secondsBetween(now, last_fired_at) >= FIRE_INTERVAL_S
+          ) {
+            last_fired_at = now;
+            const shot = withLength(toPilot, MISSILE_SPEED);
+            ctx.db.missile.insert({
+              missile_id: 0n,
+              sentinel_id: d.sentinel_id,
+              target_player_id: nearest.id,
+              origin_x: d.position_x,
+              origin_y: d.position_y,
+              origin_z: d.position_z,
+              velocity_x: shot.e,
+              velocity_y: shot.u,
+              velocity_z: shot.n,
+              fired_at: now,
+            });
+          }
+        } else {
+          // Attackers fight face to face. Each takes up station ahead of the
+          // pilot's nose — a little to one side so wingmen don't stack, swaying
+          // slowly so it is a live target — and only shoots from inside the
+          // pilot's frontal arc. A drone that ends up behind (the pilot turned,
+          // or flew past it) sprints back round to the front, holding fire.
+          const side = d.sentinel_id % 2 === 0 ? 1 : -1;
+          const seconds = Number(now.microsSinceUnixEpoch % 3_600_000_000n) / 1e6;
+          const sway = Math.sin(seconds * 0.7 + d.sentinel_id) * ENGAGE_SWAY_DEG;
+          const bearing = nearest.heading + ((side * ENGAGE_OFFSET_DEG + sway) * Math.PI) / 180;
+          const station: Vec = {
+            e: nearest.pos.e + Math.sin(bearing) * ENGAGE_AHEAD_M,
+            n: nearest.pos.n + Math.cos(bearing) * ENGAGE_AHEAD_M,
+            u: nearest.pos.u + ENGAGE_HEIGHT_M,
+          };
+          const toStation = sub(station, pos);
+          const offStation = len(toStation);
 
-        if (inFront && range <= FIRE_RANGE_M && secondsBetween(now, last_fired_at) >= FIRE_INTERVAL_S) {
-          last_fired_at = now;
-          const shot = withLength(toPilot, MISSILE_SPEED);
-          ctx.db.missile.insert({
-            missile_id: 0n,
-            sentinel_id: d.sentinel_id,
-            target_player_id: nearest.id,
-            origin_x: d.position_x,
-            origin_y: d.position_y,
-            origin_z: d.position_z,
-            velocity_x: shot.e,
-            velocity_y: shot.u,
-            velocity_z: shot.n,
-            fired_at: now,
-          });
+          behavior = inFront && offStation < ENGAGE_SETTLED_M ? "ENGAGE" : "CHASE";
+          const top = inFront ? ATTACK_SPEED : REPOSITION_SPEED;
+          want = withLength(toStation, Math.min(top, offStation * 1.5));
+
+          if (inFront && range <= FIRE_RANGE_M && secondsBetween(now, last_fired_at) >= FIRE_INTERVAL_S) {
+            last_fired_at = now;
+            const shot = withLength(toPilot, MISSILE_SPEED);
+            ctx.db.missile.insert({
+              missile_id: 0n,
+              sentinel_id: d.sentinel_id,
+              target_player_id: nearest.id,
+              origin_x: d.position_x,
+              origin_y: d.position_y,
+              origin_z: d.position_z,
+              velocity_x: shot.e,
+              velocity_y: shot.u,
+              velocity_z: shot.n,
+              fired_at: now,
+            });
+          }
         }
       } else if (
         nearest &&

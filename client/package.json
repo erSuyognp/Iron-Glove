@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:ai": "node src/ai/observation.test.js"
   },
   "dependencies": {
     "cesium": "^1.115.0",
