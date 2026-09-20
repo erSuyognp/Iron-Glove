@@ -24,3 +24,12 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Python / RL training
+.venv/
+ml/.venv/
+**/__pycache__/
+*.py[cod]
+ml/iron_glove_rl/models/*.zip
+ml/data/flight_demos/
+.pytest_cache/

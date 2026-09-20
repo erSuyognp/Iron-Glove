@@ -185,6 +185,7 @@ export function createSentinelFleet(world, glbUrl) {
       vel: new THREE.Vector3(), // last known velocity, m/s
       sample: null, // newest tick: { pos, receivedAt }
       heading: 0, // radians clockwise from north
+      health: 100,
       deadUntil: 0,
       body,
       beacon,
@@ -215,6 +216,7 @@ export function createSentinelFleet(world, glbUrl) {
     drone.vel.set(row.velocityX, row.velocityZ, row.velocityY);
     drone.behavior = row.behavior;
     drone.type = row.droneType;
+    drone.health = row.health ?? 100;
     if (first) {
       drone.pos.copy(drone.sample.pos);
       if (drone.vel.lengthSq() > 1) drone.heading = Math.atan2(drone.vel.x, drone.vel.y);

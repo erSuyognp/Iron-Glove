@@ -34,6 +34,7 @@ import {
   setGfx,
   updateCombatHud,
   flashCombat,
+  setSentinelAi,
   setSiteName,
   setMissionButtons,
   onMissionButton,
@@ -53,12 +54,69 @@ import { createListener } from './jarvis/listen.js';
 import { askJarvis } from './jarvis/assistant.js';
 import { createMissions, formatTime } from './missions/missions.js';
 import { createCombat } from './combat/combat.js';
+import { AI_FEATURES } from './ai/config.js';
+import { createSentinelController } from './ai/sentinelController.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
 import { createTracker } from './hud/tracker.js';
 import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
 import { initTrail } from './suit/thruster.js';
 import { initSuitOverlay } from './suit/player.js';
 import { createStdbClient } from './spacetimedb/client.js';
+
+// Offline-trained Sentinel policy (HUD + explicit fallback). Movement still
+// comes from tick_sentinels; this never writes health or fires a missile.
+const sentinelAi = createSentinelController();
+
+function missionSiteForActivate() {
+  if (!AI_FEATURES.rlSentinel) return site;
+  // Schema-free toggle: activate_mission stores this id; the server strips
+  // `|rl` for campus lookup and runs the exported policy on attackers.
+  return { ...site, id: `${site.id}|rl` };
+}
+
+// HUD / debug inference only. The server still flies the drones; this must
+// never throw into the render loop.
+function tickSentinelHud(now, suitState, fleet) {
+  const show = AI_FEATURES.rlSentinel && AI_FEATURES.debugHud;
+  if (!AI_FEATURES.rlSentinel) {
+    setSentinelAi('OFF', '—', false);
+    return;
+  }
+  const pe = (suitState.longitude - site.longitude) * site.mPerLon;
+  const pn = (suitState.latitude - site.latitude) * site.mPerLat;
+  const pu = suitState.altitude;
+  let nearest = null;
+  let best = Infinity;
+  for (const drone of fleet.alive()) {
+    if (drone.type !== 'attacker') continue;
+    const d = Math.hypot(drone.pos.x - pe, drone.pos.y - pn, drone.pos.z - pu);
+    if (d < best) {
+      best = d;
+      nearest = drone;
+    }
+  }
+  if (nearest) {
+    const heading = (suitState.heading * Math.PI) / 180;
+    const speed = suitState.speed || 0;
+    sentinelAi.observe({
+      sentinel: {
+        pos: [nearest.pos.x, nearest.pos.y, nearest.pos.z],
+        vel: [nearest.vel.x, nearest.vel.y, nearest.vel.z],
+        heading: nearest.heading,
+        health: nearest.health ?? 100,
+      },
+      player: {
+        pos: [pe, pn, pu],
+        vel: [Math.sin(heading) * speed, Math.cos(heading) * speed, suitState.vspeed || 0],
+        heading,
+        health: suitState.health ?? 100,
+      },
+      cooldownElapsedS: 4,
+      now,
+    });
+  }
+  setSentinelAi(sentinelAi.source, nearest ? sentinelAi.decision : '—', show);
+}
 
 // ---- Flight tuning ----
 const MAX_SPEED = 60; // m/s forward
@@ -1102,6 +1160,18 @@ function cyclePov() {
 
 async function boot() {
   initHUD();
+  setSentinelAi(
+    AI_FEATURES.rlSentinel ? 'HEURISTIC FALLBACK' : 'OFF',
+    '—',
+    AI_FEATURES.rlSentinel && AI_FEATURES.debugHud,
+  );
+  sentinelAi.start().then(() => {
+    setSentinelAi(
+      sentinelAi.source,
+      sentinelAi.decision,
+      AI_FEATURES.rlSentinel && AI_FEATURES.debugHud,
+    );
+  });
   initAttitude();
   initAudio();
   onJarvisLine(speak);
@@ -1402,7 +1472,7 @@ async function boot() {
       return;
     }
     if (kind === 'drones') {
-      if (!stdb.activateMission(site)) {
+      if (!stdb.activateMission(missionSiteForActivate())) {
         setJarvis(JARVIS_LINES.missionNoLink);
         sfx('dry');
         return;
@@ -1646,6 +1716,7 @@ async function boot() {
       pilot.fireQueued = false;
     }
     const battle = combat.update({ dt, suits: flown });
+    tickSentinelHud(now, suit, combat.fleet);
     const mine = battle.pilots.get(PLAYER_ID);
     if (mine.lock !== lockState) {
       if (mine.lock === 'LOCKED') sfx('lock');

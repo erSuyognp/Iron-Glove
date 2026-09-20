@@ -69,6 +69,8 @@ export function initHUD() {
   els.ammo = document.getElementById('hud-ammo');
   els.ammoPips = document.getElementById('hud-ammo-pips');
   els.lock = document.getElementById('hud-lock');
+  els.sentinelAi = document.getElementById('hud-sentinel-ai');
+  els.aiDecision = document.getElementById('hud-ai-decision');
   els.combatFlash = document.getElementById('combat-flash');
   els.gpws = document.getElementById('gpws');
   els.site = document.getElementById('hud-site');
@@ -220,6 +222,13 @@ export function flashCombat(kind) {
   el.className = '';
   void el.offsetWidth;
   el.className = kind;
+}
+
+export function setSentinelAi(source, decision = '—', show = true) {
+  const hud = document.getElementById('hud');
+  if (hud) hud.dataset.aiDebug = show ? '1' : '0';
+  setText('sentinelAi', source || 'OFF');
+  setText('aiDecision', decision || '—');
 }
 
 // Whose suit the camera is following.

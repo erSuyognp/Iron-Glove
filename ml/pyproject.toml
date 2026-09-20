@@ -1,0 +1,28 @@
+[project]
+name = "iron-glove-rl"
+version = "0.1.0"
+description = "Offline RL training for Iron Glove Sentinel pilots"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gymnasium>=1.3.0",
+    "numpy>=2.4.6",
+    "stable-baselines3>=2.9.0",
+    "torch>=2.14.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["iron_glove_rl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

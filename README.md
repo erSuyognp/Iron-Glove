@@ -100,6 +100,24 @@ spacetime sql iron-glove --server local "SELECT * FROM player_state"
 `server/src/module_bindings` is generated code — re-run `npm run generate`
 whenever the module schema changes.
 
+## RL Sentinel (Feature A)
+
+Offline PPO trains a pursuit policy; the live game only infers. Human flight
+(`SPEED_LERP = 0.08`) is unchanged. Details: [`docs/rl-system.md`](docs/rl-system.md).
+
+```bash
+cd ml
+uv sync
+uv run pytest -q
+uv run python -m iron_glove_rl.training.train_sentinel --timesteps 8000 --seed 42 --n-envs 1
+uv run python -m iron_glove_rl.training.evaluate_sentinel --episodes 20 --seed 42
+cd ../client && npm run test:ai
+```
+
+In game, press `1` / `M` to start the drone mission. HUD `SENTINEL AI` reads
+`RL` or `HEURISTIC FALLBACK`. Set `rlSentinel: false` in
+`client/src/ai/config.js` to restore the original attacker station-keeping.
+
 ## Controls
 
 | Key | Action |
