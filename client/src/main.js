@@ -62,6 +62,7 @@ import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
 import { initTrail } from './suit/thruster.js';
 import { initSuitOverlay } from './suit/player.js';
 import { createStdbClient } from './spacetimedb/client.js';
+import { createTutorial } from './tutorial/tutorial.js';
 
 // Offline-trained Sentinel policy (HUD + explicit fallback). Movement still
 // comes from tick_sentinels; this never writes health or fires a missile.
@@ -1347,6 +1348,15 @@ async function boot() {
     if (e.code === 'KeyV' && !e.repeat) cyclePov();
   });
 
+  // Flight tutorial: H, or the HUD button. It coaches whoever is on camera:
+  // the glove from our own suit's view, the phone from a phone pilot's.
+  const tutorial = createTutorial({
+    say: setJarvis,
+    povName: () => displayName(povId ?? PLAYER_ID),
+    watchedPilot: () => (povId ? (pilots.get(povId) ?? null) : null),
+    phonePilots: () => activePilots().filter((p) => p.kind === 'sim'),
+  });
+
   function upsertPilot(row, live) {
     let pilot = pilots.get(row.playerId);
     if (!pilot) {
@@ -1393,6 +1403,7 @@ async function boot() {
     window.__pilotRow = (row, live = true) => upsertPilot(row, live);
     window.__combat = combat;
     window.__missions = missions;
+    window.__tutorial = tutorial;
     window.__suit = () => suit;
     window.__sentinelRow = (row) => combat.onSentinel(row);
     window.__sentinelGone = (sentinelId) => combat.onSentinelGone({ sentinelId });

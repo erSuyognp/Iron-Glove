@@ -1,0 +1,360 @@
+/* Flight tutorial (tutorial/tutorial.js). It lives inside the HUD, docked under
+   the heading tape so the suit stays in view below it, and borrows the HUD's
+   palette (hud.css). No backdrop blur, for the same reason as the HUD's plates:
+   it would re-filter the whole WebGL canvas every frame. */
+
+/* The HUD button that opens it. */
+.hud-btn.coach .key { margin: 0 6px 0 0; }
+
+.tutorial {
+  position: absolute;
+  top: 122px;
+  left: 50%;
+  width: min(720px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 18px 10px 20px;
+  pointer-events: auto;
+  /* Denser than the HUD's plates: this one carries sentences, over bright tiles. */
+  background: linear-gradient(135deg, rgba(8, 36, 54, 0.93), rgba(3, 10, 20, 0.9));
+  animation: tut-in 220ms ease-out;
+}
+.tutorial[hidden] { display: none; }
+.tutorial::before { background: linear-gradient(180deg, var(--iron-gold), transparent); box-shadow: 0 0 10px var(--iron-gold); }
+@keyframes tut-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+}
+
+/* ---- Head: what this is, whose view, the chapters ---- */
+.tut-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--iron-cyan-faint);
+}
+.tut-kicker { font-size: 11px; font-weight: 700; letter-spacing: 5px; color: var(--iron-gold); text-shadow: 0 0 8px #ffc85766; }
+.tut-pov { font-size: 10px; letter-spacing: 3px; opacity: 0.75; white-space: nowrap; }
+.tut-tabs { display: flex; gap: 4px; margin-left: auto; }
+.tut-tab,
+.tut-close,
+.tut-nav {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--iron-cyan-faint);
+  background: none;
+  color: var(--iron-cyan);
+  font-family: var(--hud-font);
+  font-stretch: 85%;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-shadow: var(--hud-glow);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.tut-tab { padding: 5px 10px; opacity: 0.7; }
+.tut-tab:hover,
+.tut-close:hover,
+.tut-nav:hover:not(:disabled) { background: #6fe3ff2e; color: #eafaff; opacity: 1; }
+.tut-tab:focus,
+.tut-close:focus,
+.tut-nav:focus { outline: none; }
+.tut-tab.on {
+  opacity: 1;
+  border-color: var(--iron-gold);
+  color: var(--iron-gold);
+  text-shadow: 0 0 8px #ffc85788;
+  background: rgba(96, 66, 8, 0.35);
+}
+.tut-close { padding: 5px 9px; letter-spacing: 0; }
+
+/* ---- Body: the picture, then the words ---- */
+.tut-body {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+.tut-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-height: 212px; /* the dial's height, so the panel holds its size from step to step */
+}
+.tut-readout {
+  min-height: 12px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-align: center;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tut-copy { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.tut-count { font-size: 10px; letter-spacing: 4px; opacity: 0.7; }
+.tut-title {
+  margin: 0;
+  font-size: 23px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  line-height: 1.1;
+  color: #eafaff;
+}
+.tut-text {
+  margin: 0;
+  min-height: 4.5em; /* three lines, so the panel doesn't jump between steps */
+  font-size: 14px;
+  font-stretch: 100%;
+  letter-spacing: 0.3px;
+  line-height: 1.5;
+  color: #d6f1fb;
+  text-shadow: none;
+}
+
+/* What the device is sending right now; the step's own axis is ringed gold. */
+.tut-monitor { display: flex; flex-wrap: wrap; gap: 5px; }
+.tut-chip {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 64px;
+  padding: 4px 6px;
+  overflow: hidden;
+  border: 1px solid var(--iron-cyan-faint);
+  font-size: 9px;
+  letter-spacing: 2px;
+  text-align: center;
+  white-space: nowrap;
+}
+.tut-chip i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: linear-gradient(90deg, #2aa8ff55, #6fe3ff88);
+}
+.tut-chip b { position: relative; font-weight: 700; opacity: 0.6; }
+.tut-chip.on b { opacity: 1; color: #eafaff; }
+.tut-chip.target { border-color: var(--iron-gold); }
+.tut-chip.target i { background: linear-gradient(90deg, #ffc85744, #ffc857aa); }
+.tut-monitor.off .tut-chip { opacity: 0.4; }
+
+/* Your turn / hold it / got it, with the hold filling up behind the words. */
+.tut-status {
+  position: relative;
+  min-height: 24px;
+  padding: 5px 10px;
+  overflow: hidden;
+  border-left: 2px solid var(--iron-cyan-dim);
+  background: rgba(111, 227, 255, 0.06);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2.5px;
+}
+.tut-status i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: rgba(255, 200, 87, 0.28);
+}
+.tut-status span { position: relative; }
+.tut-status[data-state='demo'] { font-weight: 400; opacity: 0.75; }
+.tut-status[data-state='try'] { border-color: var(--iron-gold); color: var(--iron-gold); text-shadow: 0 0 8px #ffc85788; }
+.tut-status[data-state='done'] {
+  border-color: #5dffb0;
+  color: #5dffb0;
+  text-shadow: 0 0 8px #5dffb088;
+  background: rgba(93, 255, 176, 0.08);
+}
+.tut-status[data-state='done'] i { background: rgba(93, 255, 176, 0.16); }
+
+/* ---- Foot: back, where we are, next ---- */
+.tut-foot { display: flex; align-items: center; gap: 12px; }
+.tut-nav { padding: 7px 16px; }
+.tut-nav:disabled { opacity: 0.3; cursor: not-allowed; }
+.tut-nav.next { border-color: var(--iron-gold); color: var(--iron-gold); text-shadow: 0 0 8px #ffc85788; }
+.tut-nav .key { margin: 0 0 0 8px; font-weight: 400; letter-spacing: 0; }
+.tut-nav.next .key { border-color: #ffc85788; }
+.tut-dots { display: flex; gap: 6px; margin-inline: auto; }
+.tut-dots i { width: 18px; height: 3px; background: var(--iron-cyan-faint); }
+.tut-dots i.past { background: var(--iron-cyan-dim); }
+.tut-dots i.now { background: var(--iron-gold); box-shadow: 0 0 8px var(--iron-gold); }
+
+/* ---- Glove: the palm dial, the bank glyph, the g bars ---- */
+/* One view at a time, chosen by the step (data-view on the stage). */
+.tut-view { display: none; }
+.tut-stage[data-view='dial'] .tut-view[data-view='dial'],
+.tut-stage[data-view='turn'] .tut-view[data-view='turn'],
+.tut-stage[data-view='weapons'] .tut-view[data-view='weapons'] { display: block; }
+
+.tut-dial,
+.tut-bank { display: block; width: 100%; overflow: visible; fill: none; }
+.tut-dial-ring { stroke: var(--iron-cyan-faint); stroke-width: 9; }
+.tut-dial-tick { stroke: var(--iron-cyan-dim); stroke-width: 1; }
+.tut-dial-hover { stroke: #eafaff; stroke-width: 2; opacity: 0.7; }
+.tut-dial-label { fill: var(--iron-cyan); font-size: 9.5px; letter-spacing: 1.5px; }
+/* A zone glows with how hard its lobe is pulling (opacity, from tutorial.js);
+   the one this step is after is gold. */
+.tut-zone { stroke: var(--iron-cyan); stroke-width: 9; opacity: 0.4; filter: drop-shadow(0 0 4px var(--iron-cyan)); }
+.tut-stage[data-zone='dive'] .tut-zone[data-zone='dive'],
+.tut-stage[data-zone='climb'] .tut-zone[data-zone='climb'],
+.tut-stage[data-zone='thrust'] .tut-zone[data-zone='thrust'] {
+  opacity: 1 !important; /* over the inline glow: the goal is always lit */
+  stroke: var(--iron-gold);
+  filter: drop-shadow(0 0 6px var(--iron-gold));
+  animation: tut-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tut-pulse {
+  50% { stroke-width: 12; }
+}
+/* The needle is the palm: the bar is the hand edge-on, the beam its repulsor. */
+.tut-needle-beam { stroke: #eafaff; stroke-width: 2; stroke-dasharray: 3 3; }
+.tut-needle-tip { fill: #eafaff; filter: drop-shadow(0 0 5px #eafaff); }
+.tut-needle-palm { fill: #12344a; stroke: var(--iron-cyan); stroke-width: 1.5; }
+.tut-needle-core { fill: #eafaff; filter: drop-shadow(0 0 6px var(--iron-cyan)); }
+
+.tut-bank-horizon { stroke: var(--iron-cyan-dim); stroke-width: 1; stroke-dasharray: 4 5; }
+.tut-bank-wing { stroke: var(--iron-gold); stroke-width: 3; stroke-linejoin: round; filter: drop-shadow(0 0 5px #ffc85788); }
+.tut-bar { display: flex; align-items: center; gap: 8px; font-size: 9px; letter-spacing: 2px; }
+.tut-bar-track { position: relative; flex: 1; height: 8px; background: var(--iron-cyan-faint); }
+.tut-bar-dead { position: absolute; inset: 0 41.1%; background: rgba(2, 8, 16, 0.75); } /* the ±8° of 45° that do nothing */
+.tut-bar-track b {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 4px;
+  height: 16px;
+  margin-left: -2px;
+  background: var(--iron-gold);
+  box-shadow: 0 0 8px var(--iron-gold);
+}
+
+.tut-g { display: flex; flex-direction: column; gap: 6px; padding: 0 4px; }
+.tut-g-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 9px; letter-spacing: 2px; }
+.tut-g-head b { font-size: 12px; letter-spacing: 3px; color: #eafaff; }
+.tut-g-head span { opacity: 0.7; }
+.tut-g-track { position: relative; height: 14px; margin-bottom: 8px; background: var(--iron-cyan-faint); }
+.tut-g-track i { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--iron-gold); box-shadow: 0 0 6px var(--iron-gold); }
+.tut-g-track b { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(90deg, #2aa8ff, var(--iron-cyan)); }
+.tut-g-track b.hot { background: linear-gradient(90deg, #ff8a3c, var(--iron-red)); box-shadow: 0 0 10px var(--iron-red); }
+.tut-g-scale { position: relative; height: 10px; font-size: 8px; letter-spacing: 1px; opacity: 0.6; }
+.tut-g-scale span { position: absolute; transform: translateX(-50%); }
+.tut-g-scale span:nth-child(1) { left: 0; transform: none; }
+.tut-g-scale span:nth-child(2) { left: 37.5%; }
+.tut-g-scale span:nth-child(3) { left: 62.5%; }
+.tut-g-scale span:nth-child(4) { left: auto; right: 0; transform: none; }
+
+/* ---- Phone: seen from above, as its pilot holds it ---- */
+.tut-phone-scene { position: relative; height: 184px; perspective: 460px; }
+.tut-phone-level,
+.tut-phone {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 78px;
+  height: 146px;
+  margin: -73px 0 0 -39px;
+  border-radius: 13px;
+}
+/* The neutral pose: stays put, so the tilt reads against it. */
+.tut-phone-level { border: 1px dashed var(--iron-cyan-dim); transform: rotateX(22deg) rotateZ(-16deg); }
+/* --fwd tips the top edge away (tutorial.js), --right drops the right edge. The
+   view is steep enough that a full 52° dive still shows its face. */
+.tut-phone {
+  transform: rotateX(22deg) rotateZ(-16deg) rotateX(var(--fwd, 0deg)) rotateY(var(--right, 0deg));
+  transform-style: preserve-3d;
+}
+/* The back of the case, a little below the face, gives the slab its edge. */
+.tut-phone::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 13px;
+  background: #02070d;
+  box-shadow: 0 0 22px #38c8ff55;
+  transform: translateZ(-9px);
+}
+.tut-phone-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 7px 9px;
+  border: 2px solid var(--iron-cyan);
+  border-radius: 13px;
+  background: linear-gradient(160deg, #0d2233, #05101b);
+  box-shadow: inset 0 0 14px #38c8ff33;
+}
+.tut-phone-notch { position: absolute; top: 6px; left: 50%; width: 22px; height: 4px; margin-left: -11px; border-radius: 2px; background: var(--iron-cyan-dim); }
+.tut-phone-reticle {
+  width: 40px;
+  height: 40px;
+  margin-top: 8px;
+  border: 1px solid var(--iron-cyan-dim);
+  border-radius: 50%;
+  background: radial-gradient(circle, #eafff9 0 16%, #3ff0ff 17% 34%, transparent 36%);
+  box-shadow: 0 0 12px #38c8ff66;
+}
+.tut-phone-pad { display: flex; gap: 4px; width: 100%; }
+.tut-phone-pad b {
+  flex: 1;
+  padding: 8px 0;
+  border: 1px solid #ffc857aa;
+  border-radius: 4px;
+  color: var(--iron-gold);
+  font-size: 7px;
+  letter-spacing: 1px;
+  text-align: center;
+  text-shadow: none;
+}
+.tut-phone-pad b.fire { border-color: #ff4438aa; color: #ff7a70; }
+.tut-phone-pad b.down { background: var(--iron-gold); color: #120c02; box-shadow: 0 0 12px var(--iron-gold); }
+.tut-phone-pad b.fire.down { background: var(--iron-red); color: #fff; box-shadow: 0 0 12px var(--iron-red); }
+.tut-phone-far,
+.tut-phone-near { position: absolute; left: 0; right: 0; font-size: 8px; letter-spacing: 3px; text-align: center; opacity: 0.55; }
+.tut-phone-far { top: 0; }
+.tut-phone-near { bottom: 0; }
+
+/* ---- Keys ---- */
+.tut-keys { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.tut-keys-cluster { display: flex; align-items: flex-end; gap: 14px; }
+.tut-keys-grid { display: grid; grid-template-columns: repeat(3, 32px); gap: 4px; }
+.tut-keys-row { display: flex; gap: 4px; }
+.tut-cap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--iron-cyan-faint);
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.45;
+}
+.tut-cap.wide { width: 58px; font-size: 9px; letter-spacing: 1px; }
+.tut-cap.wider { width: 86px; font-size: 9px; letter-spacing: 2px; }
+.tut-cap.target { opacity: 1; border-color: var(--iron-gold); color: var(--iron-gold); text-shadow: 0 0 8px #ffc85788; }
+.tut-cap.down { opacity: 1; background: var(--iron-cyan); border-color: var(--iron-cyan); color: #04121a; text-shadow: none; box-shadow: 0 0 12px var(--iron-cyan); }
+
+/* Narrow or short windows: the picture shrinks, then stacks above the words. */
+@media (max-height: 700px) {
+  .tutorial { top: 84px; }
+  .tut-text { min-height: 0; }
+}
+@media (max-width: 680px) {
+  .tut-body { grid-template-columns: minmax(0, 1fr); }
+  .tut-stage { min-height: 0; width: 208px; margin: 0 auto; }
+  .tut-pov { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tutorial,
+  .tut-zone { animation: none !important; }
+}

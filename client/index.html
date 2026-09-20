@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IRON GLOVE</title>
   <link rel="stylesheet" href="/src/hud/hud.css" />
+  <link rel="stylesheet" href="/src/tutorial/tutorial.css" />
   <link rel="stylesheet" href="/src/landing/landing.css" />
 </head>
 <body>
@@ -81,6 +82,9 @@
         <button type="button" id="btn-talk" class="hud-btn talk" title="Talk to JARVIS (T)"><span class="key">T</span> TALK TO JARVIS</button>
       </div>
       <div class="hud-actions">
+        <button type="button" id="btn-tutorial" class="hud-btn coach" title="Flight tutorial (H)"><span class="key">H</span> TUTORIAL</button>
+      </div>
+      <div class="hud-actions">
         <button type="button" id="btn-pov" class="hud-btn pov" hidden>POV</button>
       </div>
       <div class="hud-actions">
@@ -123,6 +127,36 @@
 
     <!-- Heading tape (scrolls with heading) -->
     <div id="heading-tape" class="heading-tape"></div>
+
+    <!-- Flight tutorial (tutorial/tutorial.js): the glove from our own view, the phone from a phone pilot's -->
+    <section id="tutorial" class="tutorial hud-panel" aria-label="Flight tutorial" hidden>
+      <header class="tut-head">
+        <span class="tut-kicker">FLIGHT TUTORIAL</span>
+        <span id="tut-pov" class="tut-pov"></span>
+        <div class="tut-tabs" role="tablist">
+          <button type="button" class="tut-tab" role="tab" data-chapter="glove">GLOVE</button>
+          <button type="button" class="tut-tab" role="tab" data-chapter="phone">PHONE</button>
+          <button type="button" class="tut-tab" role="tab" data-chapter="keys">KEYS</button>
+        </div>
+        <button type="button" id="tut-close" class="tut-close" title="Close (Esc)" aria-label="Close tutorial">✕</button>
+      </header>
+      <div class="tut-body">
+        <!-- The picture for the step: drawn, and moved every frame, by tutorial.js -->
+        <div id="tut-stage" class="tut-stage" aria-hidden="true"></div>
+        <div class="tut-copy">
+          <span id="tut-count" class="tut-count"></span>
+          <h2 id="tut-title" class="tut-title"></h2>
+          <p id="tut-text" class="tut-text"></p>
+          <div id="tut-monitor" class="tut-monitor" aria-hidden="true"></div>
+          <div id="tut-status" class="tut-status" data-state="demo"><i id="tut-progress"></i><span id="tut-status-text"></span></div>
+        </div>
+      </div>
+      <footer class="tut-foot">
+        <button type="button" id="tut-back" class="tut-nav">BACK <span class="key">⌫</span></button>
+        <div id="tut-dots" class="tut-dots" aria-hidden="true"></div>
+        <button type="button" id="tut-next" class="tut-nav next"><span id="tut-next-label">NEXT</span> <span class="key">↵</span></button>
+      </footer>
+    </section>
 
     <!-- Ground proximity warning -->
     <div id="gpws" class="gpws">PULL UP</div>
