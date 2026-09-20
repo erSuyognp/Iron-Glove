@@ -42,9 +42,14 @@ import {
   onJarvisLine,
   setAudioButton,
   onAudioButton,
+  setTalkState,
+  setTalkAvailable,
+  onTalkButton,
 } from './hud/hud.js';
-import { initAudio, sfx, updateFlightAudio, isMuted, setMuted } from './audio/sound.js';
-import { speak } from './audio/voice.js';
+import { initAudio, sfx, duck, updateFlightAudio, isMuted, setMuted } from './audio/sound.js';
+import { speak, hush } from './audio/voice.js';
+import { createListener } from './jarvis/listen.js';
+import { askJarvis } from './jarvis/assistant.js';
 import { createMissions, formatTime } from './missions/missions.js';
 import { createCombat } from './combat/combat.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
@@ -916,10 +921,11 @@ async function boot() {
   initAudio();
   onJarvisLine(speak);
   setAudioButton(!isMuted());
-  const toggleAudio = () => {
-    setMuted(!isMuted());
-    setAudioButton(!isMuted());
+  const toggleAudioTo = (on) => {
+    setMuted(!on);
+    setAudioButton(on);
   };
+  const toggleAudio = () => toggleAudioTo(isMuted());
   onAudioButton(toggleAudio);
   window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyN' && !e.repeat) toggleAudio();
@@ -968,7 +974,11 @@ async function boot() {
 
   // The URL site remains a useful reload hint, but the two-screen pre-flight
   // flow always stays available. With no hint, JHU Homewood is selected.
-  const selected = await pickSite(provisional);
+  // A spoken "take me to…" reloads with &go=1: straight to that site.
+  const direct = asked && params.get('go') === '1';
+  params.delete('go');
+  if (direct) for (const id of ['boot', 'dest']) document.getElementById(id).hidden = true;
+  const selected = direct ? asked : await pickSite(provisional);
   selectingDestination = false;
   if (preloadFrame !== null) cancelAnimationFrame(preloadFrame);
   chooseSite(selected.id);
@@ -1212,6 +1222,84 @@ async function boot() {
     else if (e.code === 'KeyM') mission ? endMission() : toggleMission('drones');
   });
 
+  // --- Talking to JARVIS (T, or the HUD button) ---
+  // One request at a time: what the pilot said goes to the assistant with a
+  // snapshot of the flight; the reply is spoken and its action carried out.
+  const lastHud = { altitude: 0, hostiles: 0, missiles: 0 };
+  function flightContext() {
+    const m = missions.hud();
+    return {
+      site: site.name,
+      place: site.place,
+      mission: mission ? { drones: 'drone strike', fire: 'fire response', run: 'downtown run' }[mission] : null,
+      missionStatus: m ? [m.count, m.objective].filter(Boolean).join(', ') : null,
+      health: Math.round(suit.health),
+      altitude: Math.round(lastHud.altitude),
+      speed: Math.round(Math.abs(suit.speed)),
+      heading: Math.round(suit.heading),
+      hostiles: lastHud.hostiles,
+      missiles: lastHud.missiles,
+      otherPilots: activePilots().map((p) => p.name),
+      input: suit.mode,
+      muted: isMuted(),
+    };
+  }
+  const JARVIS_ACTIONS = {
+    start_drones: () => mission !== 'drones' && toggleMission('drones'),
+    start_fire: () => mission !== 'fire' && toggleMission('fire'),
+    start_run: () => mission !== 'run' && toggleMission('run'),
+    end_mission: () => endMission(false),
+    mute: () => toggleAudioTo(false),
+    unmute: () => toggleAudioTo(true),
+    reset_position: () => {
+      suit = spawnState();
+      localSensors.surface = undefined;
+      trailClearNeeded = true;
+    },
+    switch_view: cyclePov,
+    change_site: (answer) => {
+      // Let him finish the sentence, then go.
+      setTimeout(() => {
+        window.location.search = new URLSearchParams({ site: answer.site, go: '1' }).toString();
+      }, 2600);
+    },
+  };
+  async function hearPilot(text) {
+    setTalkState('thinking', text);
+    const answer = await askJarvis(text, flightContext());
+    setTalkState('idle');
+    duck(false);
+    // His reply first, so a mission's own opening line doesn't talk over it.
+    setJarvis(answer.reply, { urgent: true, keep: !answer.improvised });
+    const muting = answer.action === 'mute';
+    setTimeout(() => JARVIS_ACTIONS[answer.action]?.(answer), muting ? 2200 : 0);
+  }
+  const listener = createListener({
+    onState: (on) => {
+      if (on) {
+        hush();
+        duck(true); // pull the jets down so the mic hears the pilot
+        sfx('select');
+        setTalkState('listening');
+      }
+    },
+    onInterim: (text) => setTalkState('listening', text),
+    onFinal: hearPilot,
+    onError: (reason) => {
+      setTalkState('idle');
+      duck(false);
+      if (reason === 'denied') setJarvis('I need microphone access to hear you, sir.');
+      else if (reason === 'unavailable') setJarvis('Voice input is unavailable in this browser, sir.');
+      else setJarvis("I didn't catch that, sir.");
+    },
+  });
+  setTalkAvailable(listener.supported);
+  const toggleTalk = () => (listener.listening() ? listener.stop() : listener.start());
+  onTalkButton(toggleTalk);
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyT' && !e.repeat && !arriving) toggleTalk();
+  });
+
   // Cesium's canvas is resized from here (its own render loop is off), but
   // only when the page says its size changed: asking every frame forces a
   // synchronous layout, because the HUD has just been rewritten.
@@ -1368,6 +1456,8 @@ async function boot() {
     // The combat readouts follow the camera, like the rest of the HUD.
     const shown = (watched && battle.pilots.get(watched.id)) || mine;
     updateCombatHud({ ...shown, drones: battle.drones });
+    lastHud.hostiles = battle.drones;
+    lastHud.missiles = mine.ammo;
 
     if (mine.fired) {
       sfx('missile');
@@ -1491,6 +1581,7 @@ async function boot() {
       // Show height above the ground/rooftops (AGL) when we know the surface.
       const surface = localSensors.surface;
       const agl = surface !== undefined ? Math.max(0, suit.altitude - surface) : suit.altitude;
+      lastHud.altitude = agl;
 
       // Animated attitude indicator + heading tape.
       updateAttitude(suit.pitch, suit.roll + suit.bank, suit.heading);

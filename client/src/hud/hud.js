@@ -23,11 +23,13 @@ const HELP_KEYBOARD =
       <span class="key">Space</span> boost · fire when locked
       <span class="key">F</span> water
       <span class="key">1</span><span class="key">2</span><span class="key">3</span> missions
+      <span class="key">T</span> talk
       <span class="key">R</span> reset`;
 
 const HELP_GLOVE =
   `roll 160 climb · roll 0 nose dive · roll −120 thrust · pitch lean · fist blast / water · flick to fire when locked
       <span class="key">1</span><span class="key">2</span><span class="key">3</span> missions
+      <span class="key">T</span> talk
       <span class="key">R</span> reset`;
 
 export function initHUD() {
@@ -44,6 +46,8 @@ export function initHUD() {
   els.arcSpd = document.getElementById('hud-arc-spd');
   els.arcAlt = document.getElementById('hud-arc-alt');
   els.audioBtn = document.getElementById('btn-audio');
+  els.talkBtn = document.getElementById('btn-talk');
+  els.jarvisBar = document.getElementById('hud-jarvis');
   els.missionPanel = document.getElementById('mission-panel');
   els.missionTitle = document.getElementById('mission-title');
   els.missionTime = document.getElementById('mission-time');
@@ -335,6 +339,32 @@ export function updateHUD(state) {
 // SpacetimeDB link status shown in the HUD (e.g. "ONLINE", "OFFLINE").
 export function setNet(text) {
   if (els.net) els.net.textContent = text;
+}
+
+// Talking to JARVIS. state: 'idle' | 'listening' | 'thinking'. While the pilot
+// is talking the ticker shows their words instead of his.
+export function setTalkState(state, heard = '') {
+  if (els.jarvisBar) els.jarvisBar.dataset.state = state;
+  if (els.talkBtn) {
+    els.talkBtn.classList.toggle('live', state !== 'idle');
+    els.talkBtn.innerHTML =
+      state === 'listening' ? '<span class="key">T</span> LISTENING…' : state === 'thinking' ? '<span class="key">T</span> THINKING…' : '<span class="key">T</span> TALK TO JARVIS';
+  }
+  if (state !== 'idle' && els.jarvis) els.jarvis.textContent = heard ? `“${heard}”` : 'Listening, sir…';
+}
+
+export function setTalkAvailable(available) {
+  if (!els.talkBtn || available) return;
+  els.talkBtn.disabled = true;
+  els.talkBtn.title = 'Voice input needs Chrome or Edge.';
+}
+
+export function onTalkButton(handler) {
+  if (!els.talkBtn || !handler) return;
+  els.talkBtn.addEventListener('click', (e) => {
+    e.currentTarget.blur();
+    handler();
+  });
 }
 
 // JARVIS: the ticker shows the line; a listener (his voice) hears it too.

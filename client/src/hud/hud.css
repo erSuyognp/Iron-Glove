@@ -617,6 +617,21 @@ html, body {
 }
 .jarvis-line { font-size: 14px; letter-spacing: 0.5px; color: #eafaff; }
 
+/* While the pilot is talking the bar turns to them: cyan, a faster tick. */
+.hud-jarvis[data-state='listening'],
+.hud-jarvis[data-state='thinking'] { border-color: var(--iron-cyan); }
+.hud-jarvis[data-state='listening'] .jarvis-label,
+.hud-jarvis[data-state='thinking'] .jarvis-label { color: var(--iron-cyan); text-shadow: var(--hud-glow); }
+.hud-jarvis[data-state='listening'] .jarvis-label::before {
+  background: var(--iron-cyan);
+  box-shadow: 5px 0 0 var(--iron-cyan), 10px 0 0 var(--iron-cyan);
+  animation-duration: 0.35s;
+}
+.hud-jarvis[data-state='listening'] .jarvis-line,
+.hud-jarvis[data-state='thinking'] .jarvis-line { font-style: italic; opacity: 0.9; }
+.hud-btn.talk.live { animation: mission-armed 0.9s ease-in-out infinite; }
+.hud-btn.talk .key { margin: 0 6px 0 0; }
+
 /* Bottom help */
 .hud-help {
   position: absolute;

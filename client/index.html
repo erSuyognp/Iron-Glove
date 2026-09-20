@@ -76,6 +76,9 @@
         <button type="button" id="btn-audio" class="hud-btn quiet" title="Sound on/off (N)">SOUND ON</button>
       </div>
       <div class="hud-actions">
+        <button type="button" id="btn-talk" class="hud-btn talk" title="Talk to JARVIS (T)"><span class="key">T</span> TALK TO JARVIS</button>
+      </div>
+      <div class="hud-actions">
         <button type="button" id="btn-pov" class="hud-btn pov" hidden>POV</button>
       </div>
       <div class="hud-actions">
@@ -145,7 +148,7 @@
     <div id="repulsor-flash"></div>
 
     <!-- JARVIS ticker (wired for Phase 4, static for now) -->
-    <div class="hud-jarvis">
+    <div id="hud-jarvis" class="hud-jarvis">
       <span class="jarvis-label">JARVIS</span>
       <span id="jarvis-ticker" class="jarvis-line">Awaiting destination, sir.</span>
     </div>
@@ -161,6 +164,7 @@
       <span class="key">Space</span> boost · fire when locked
       <span class="key">F</span> water
       <span class="key">1</span><span class="key">2</span><span class="key">3</span> missions
+      <span class="key">T</span> talk
       <span class="key">R</span> reset
     </div>
   </div>

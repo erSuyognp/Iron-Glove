@@ -33,12 +33,12 @@ export function lineHash(text) {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
-function fetchClip(text) {
+function fetchClip(text, keep) {
   if (!clips.has(text)) {
     clips.set(
       text,
       (async () => {
-        const res = await fetch(`/voice/${lineHash(text)}.mp3?text=${encodeURIComponent(text)}`);
+        const res = await fetch(`/voice/${lineHash(text)}.mp3?text=${encodeURIComponent(text)}${keep ? '' : '&keep=0'}`);
         if (!res.ok || !(res.headers.get('content-type') || '').startsWith('audio')) return null;
         return audioContext().decodeAudioData(await res.arrayBuffer());
       })().catch(() => null),
@@ -91,8 +91,17 @@ function playBrowserVoice(text) {
   return entry;
 }
 
-/** Speak a JARVIS line. `urgent` lines interrupt whatever he is saying. */
-export async function speak(text, { urgent = false } = {}) {
+/** Cut JARVIS off (the pilot has started talking). */
+export function hush() {
+  playing?.stop();
+}
+
+/**
+ * Speak a JARVIS line. `urgent` lines interrupt whatever he is saying;
+ * `keep: false` marks a one-off (a conversational reply) whose audio the dev
+ * server should not save.
+ */
+export async function speak(text, { urgent = false, keep = true } = {}) {
   const ctx = audioContext();
   if (!ctx || ctx.state !== 'running' || isMuted() || !text || text.length > MAX_LENGTH) return;
   if (playing && !urgent) return;
@@ -103,12 +112,13 @@ export async function speak(text, { urgent = false } = {}) {
   playing?.stop();
   playing = claim;
 
-  const buffer = performance.now() >= recordedRetryAt ? await fetchClip(text) : null;
+  const buffer = performance.now() >= recordedRetryAt ? await fetchClip(text, keep) : null;
   if (playing !== claim) return; // an urgent line took over while this one loaded
   if (!buffer) {
     recordedRetryAt = performance.now() + RETRY_MS;
     clips.delete(text);
   }
+  if (!keep) clips.delete(text); // nor is it worth holding in memory
   duck(true);
   playing = (buffer ? playBuffer(buffer) : playBrowserVoice(text)) ?? null;
   if (!playing) duck(false);
