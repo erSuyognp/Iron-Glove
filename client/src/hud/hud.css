@@ -577,6 +577,39 @@ html, body {
   50% { filter: brightness(1.5); }
 }
 
+/* Mission outcome: a banner across the visor, gold for a win, red for a loss. */
+.mission-result {
+  --result: var(--iron-gold);
+  position: absolute;
+  top: 24%;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px 0 20px;
+  color: var(--result);
+  background: linear-gradient(90deg, transparent, rgba(3, 12, 22, 0.78) 25%, rgba(3, 12, 22, 0.78) 75%, transparent);
+  border-top: 1px solid var(--result);
+  border-bottom: 1px solid var(--result);
+  border-image: linear-gradient(90deg, transparent, var(--result) 30%, var(--result) 70%, transparent) 1;
+  text-shadow: 0 0 18px color-mix(in srgb, var(--result) 60%, transparent);
+  animation: mission-result-in 4.5s ease both;
+}
+.mission-result[hidden] { display: none; }
+.mission-result[data-outcome='lost'] { --result: var(--iron-red); }
+.mission-result-kicker { font-size: 13px; letter-spacing: 14px; text-indent: 14px; opacity: 0.85; }
+.mission-result-title { font-size: clamp(34px, 5.6vw, 76px); font-weight: 700; letter-spacing: 10px; text-indent: 10px; line-height: 1; color: #fff; }
+.mission-result-detail { margin-top: 6px; font-size: 13px; letter-spacing: 5px; text-indent: 5px; }
+.mission-result-detail:empty { display: none; }
+@keyframes mission-result-in {
+  0% { opacity: 0; transform: scaleY(0.2); }
+  6% { opacity: 1; transform: scaleY(1); }
+  88% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* JARVIS ticker */
 .hud-jarvis {
   position: absolute;

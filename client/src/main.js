@@ -45,6 +45,7 @@ import {
   setTalkState,
   setTalkAvailable,
   onTalkButton,
+  showMissionResult,
 } from './hud/hud.js';
 import { initAudio, sfx, duck, updateFlightAudio, isMuted, setMuted } from './audio/sound.js';
 import { speak, hush } from './audio/voice.js';
@@ -142,9 +143,13 @@ const REPULSOR_LIFE = 0.35; // seconds the blast ellipsoid lasts
 const BOUNDARY_WARN_COOLDOWN_MS = 2400;
 
 const REPULSOR_LINES = [
-  'Repulsor blast away, sir.',
+  'Repulsor blast away.',
   'Unibeam capacitor discharged.',
   'Fist gesture confirmed. Repulsors firing.',
+  'Repulsors hot. Whatever that was, it has been warned.',
+  'Full discharge. Recharging.',
+  'Blast away. Subtle as ever.',
+  'Repulsor fired. I do hope that was deliberate.',
 ];
 
 // ---- SpacetimeDB sync (Phase 2) ----
@@ -181,60 +186,240 @@ const LABEL_HEIGHT = 14; // m above the boots for a pilot's name tag
 // site streams in and is measured (see settleSite).
 const ARRIVAL_TIMEOUT_MS = 12000;
 
+// What JARVIS says. Every entry has several takes and `pick` never gives the
+// same one twice running, so a long flight doesn't sound like a loop. Entries
+// read like plain strings (getters) or take arguments; the three arrays are
+// picked from where they are used. Each distinct sentence is recorded once by
+// the voice (audio/voice.js), so takes built around a number keep the number
+// at the end of a fixed phrase rather than scattering it.
 const JARVIS_LINES = {
-  online: () => `Suit online. ${site.name} airspace is clear, sir.`,
+  online: () =>
+    pick([
+      `Suit online. ${site.name} airspace is clear.`,
+      `All systems nominal. Welcome to ${site.name}.`,
+      `Flight systems green. ${site.name} is all yours.`,
+      `We have arrived. ${site.name}, and not a cloud to blame anything on.`,
+    ]),
   perimeter: () =>
     site.polygon
-      ? 'Homewood perimeter engaged. Keeping you inside campus airspace, sir.'
-      : `Flight perimeter engaged. Keeping you over ${site.name}, sir.`,
-  missionOn: 'Mission active. Four hostile drones inbound — two will shoot back, sir.',
-  missionOff: 'Mission ended. Drones standing down, sir.',
-  missionBusy: 'One mission at a time, sir. End the current one first.',
-  fireOn: 'Multiple fires reported, sir. Water cannon armed — hold F over each one.',
-  fireOff: 'Fire response stood down, sir.',
+      ? pick([
+          'Homewood perimeter engaged. Keeping you inside campus airspace.',
+          'That is the edge of campus. Turning you back.',
+          'Campus boundary. The rest of Baltimore will have to wait.',
+        ])
+      : pick([
+          `Flight perimeter engaged. Keeping you over ${site.name}.`,
+          `That is the edge of our airspace. Bringing you back toward ${site.name}.`,
+          'Perimeter reached. I would rather we stayed where I can see the ground.',
+          'Airspace boundary. Turning you around.',
+        ]),
+  get missionOn() {
+    return pick([
+      'Mission active. Four hostile drones inbound — two will shoot back.',
+      'Four hostiles on the scope. Two are armed. Weapons free.',
+      'Drones launching. Two hunters, two runners. Do mind the hunters.',
+      'Hostile drones in our airspace. I have taken the liberty of arming the missiles.',
+    ]);
+  },
+  get missionOff() {
+    return pick([
+      'Mission ended. Drones standing down.',
+      'Standing the drones down.',
+      'Mission scrubbed. The sky is yours again.',
+    ]);
+  },
+  get missionWon() {
+    return pick([
+      'Mission complete. Every drone is down.',
+      'Mission complete. The sky is clear.',
+      'That was the last of them. Mission complete.',
+    ]);
+  },
+  get missionFailed() {
+    return pick([
+      'Mission failed. Suit integrity lost — rebooting at the arrival point.',
+      'Mission failed. The suit is down. Restart it when you are ready.',
+      'Mission failed. That was the last of the armour.',
+    ]);
+  },
+  get missionBusy() {
+    return pick([
+      'One mission at a time. End the current one first.',
+      'We are rather busy already. Finish this one first.',
+      'I can only run one mission at a time.',
+    ]);
+  },
+  get fireOn() {
+    return pick([
+      'Multiple fires reported. Water cannon armed — hold F over each one.',
+      'Five fires burning. Water cannon is live — hold F when you are over one.',
+      'Fire response. Follow the beacons, and hold F to douse them.',
+      'The city is on fire in five places. I have filled the tank. Hold F over each.',
+    ]);
+  },
+  get fireOff() {
+    return pick(['Fire response stood down.', 'Water cannon safed.', 'Leaving the rest to the fire department.']);
+  },
   fireOut: (left) =>
-    left > 1 ? `Fire out. ${left} still burning, sir.` : left === 1 ? 'Fire out. One left, sir.' : 'Fire out.',
-  fireDone: (time) => `All fires extinguished in ${time}. The city thanks you, sir.`,
-  tankEmpty: 'Water tank empty, sir. Give it a moment to refill.',
-  runOn: 'Course plotted through the city, sir. Twelve gates — do try not to clip the architecture.',
-  runOff: 'Run abandoned, sir.',
-  runHalf: 'Halfway, sir. Keep it tight.',
-  runMissed: 'Wide of the gate, sir. Come around again.',
+    left > 1
+      ? pick([`Fire out. ${left} still burning.`, `That one is out. ${left} to go.`, `Extinguished. Still burning: ${left}.`])
+      : left === 1
+        ? pick(['Fire out. One left.', 'Extinguished. Just the one remaining.', 'That one is out. Last fire.'])
+        : 'Fire out.',
+  fireDone: (time) =>
+    pick([
+      `All fires extinguished in ${time}. The city thanks you.`,
+      `Every fire is out. Total time: ${time}.`,
+      `That is the last of them. The fire department sends its regards. Time: ${time}.`,
+    ]),
+  get tankEmpty() {
+    return pick([
+      'Water tank empty. Give it a moment to refill.',
+      'The tank is dry. Refilling.',
+      'Out of water. A few seconds, if you would.',
+    ]);
+  },
+  get runOn() {
+    return pick([
+      'Course plotted through the city. Twelve gates — do try not to clip the architecture.',
+      'Twelve gates, laid low over the rooftops. The clock starts at the first.',
+      'Course is up. Gold gate next, and the clock starts when you pass it.',
+      'A low-level course. Twelve gates. I shall be timing you, naturally.',
+    ]);
+  },
+  get runOff() {
+    return pick(['Run abandoned.', 'Course cleared.', 'Stopping the clock. We shall call that a practice lap.']);
+  },
+  get runHalf() {
+    return pick(['Halfway. Keep it tight.', 'Six down, six to go.', 'Halfway round. A respectable pace.']);
+  },
+  get runMissed() {
+    return pick([
+      'Wide of the gate. Come around again.',
+      'That was the outside of the gate. Around you go.',
+      'Missed it. The gate is the glowing circle.',
+    ]);
+  },
   runDone: (time, record) =>
-    record ? `Course complete in ${time}. A new record, sir.` : `Course complete in ${time}, sir.`,
-  missionNoLink: 'No SpacetimeDB link, sir. I cannot launch the drones without it.',
+    record
+      ? pick([
+          `Course complete in ${time}. A new record.`,
+          `A new best. Course time: ${time}.`,
+          `That is the record. Do try to look surprised. Course time: ${time}.`,
+        ])
+      : pick([
+          `Course complete in ${time}.`,
+          `Across the line. Course time: ${time}.`,
+          `Not your best, but tidy. Course time: ${time}.`,
+        ]),
+  get missionNoLink() {
+    return pick([
+      'No SpacetimeDB link. I cannot launch the drones without it.',
+      'The drone server is not answering. No link, no drones.',
+    ]);
+  },
   bump: [
-    'Structural contact. The architecture is not the enemy, sir.',
+    'Structural contact. The architecture is not the enemy.',
     'That was a building. They rarely move.',
+    'Contact. I would remind you the suit is not a wrecking ball.',
+    'We appear to have found a wall.',
+    'Impact registered. The paintwork will need attention.',
+    'A gentle reminder that solid objects remain solid.',
+    'Collision. Shall I draft an apology to the owners?',
   ],
   pilotJoined: (name) =>
-    `A second suit has entered our airspace, sir. ${name} is airborne — press V to take their view.`,
-  pilotLeft: (name) => `${name}'s suit has gone quiet, sir.`,
-  povLost: (name) => `Lost ${name}'s feed. Back on your suit, sir.`,
-  missileAway: ['Missile away.', 'Fox three, sir.', 'Missile tracking. Do try to look impressed.'],
-  rackEmpty: 'Missile rack is empty, sir. Reloading — ten seconds a round.',
+    pick([
+      `A second suit has entered our airspace. ${name} is airborne — press V to take their view.`,
+      `${name} has joined us. Press V to see through their suit.`,
+      `We have company. ${name} is airborne — V for their view.`,
+    ]),
+  pilotLeft: (name) => pick([`${name}'s suit has gone quiet.`, `${name} has left our airspace.`, `We have lost ${name}. Signal only, I trust.`]),
+  povLost: (name) => pick([`Lost ${name}'s feed. Back on your suit.`, `${name}'s camera has dropped. Returning you to your own.`]),
+  missileAway: [
+    'Missile away.',
+    'Fox three.',
+    'Missile tracking. Do try to look impressed.',
+    'Bird away.',
+    'Launching.',
+    'Missile off the rail and tracking.',
+    'One away.',
+    'Good tone. Missile away.',
+  ],
+  get rackEmpty() {
+    return pick([
+      'Missile rack is empty. Reloading — ten seconds a round.',
+      'Nothing left on the rack. Ten seconds to the next round.',
+      'We are out of missiles. Reloading.',
+      'Rack empty. Might I suggest evasive flying in the meantime?',
+    ]);
+  },
   kill: (type) =>
     type === 'fleeing'
-      ? 'Runner down. It very nearly got away, sir.'
-      : 'Hostile drone destroyed. One fewer thing shooting at us.',
-  wingmanFired: (name) => `${name} has a missile in the air, sir.`,
+      ? pick([
+          'Runner down. It very nearly got away.',
+          'Got the runner. It had quite the head start.',
+          'Runner destroyed. They never do learn to zigzag.',
+        ])
+      : pick([
+          'Hostile drone destroyed. One fewer thing shooting at us.',
+          'Splash one.',
+          'Direct hit. Drone destroyed.',
+          'Target down. Nicely done.',
+          'Hunter destroyed. It will not be missed.',
+          'Drone eliminated. I shall add it to the tally.',
+        ]),
+  wingmanFired: (name) => pick([`${name} has a missile in the air.`, `Missile away from ${name}.`, `${name} is firing.`]),
   wingmanKill: (name, type) =>
-    type === 'fleeing' ? `${name} ran down a runner. Keep up, sir.` : `${name} just splashed a hostile drone.`,
-  wingmanDowned: (name) => `${name} has been shot down. Rebooting their suit beside you, sir.`,
-  inbound: 'Missile inbound. I recommend being somewhere else, sir.',
-  struck: (hp) => `Direct hit. Suit integrity at ${Math.round(hp)} percent.`,
-  downed: 'Suit integrity lost. Rebooting at the arrival point, sir.',
+    type === 'fleeing'
+      ? pick([`${name} ran down a runner. Keep up.`, `${name} caught the runner.`])
+      : pick([`${name} just splashed a hostile drone.`, `That kill goes to ${name}.`, `${name} got one. You are being outscored.`]),
+  wingmanDowned: (name) =>
+    pick([`${name} has been shot down. Rebooting their suit beside you.`, `${name} is down. Bringing their suit back up beside you.`]),
+  get inbound() {
+    return pick([
+      'Missile inbound. I recommend being somewhere else.',
+      'Incoming missile. Break, break.',
+      'They have fired on us. Evasive action, please.',
+      'Missile in the air and it is not ours.',
+      'Inbound. Now would be a good time to turn.',
+    ]);
+  },
+  struck: (hp) =>
+    pick([
+      `Direct hit. Suit integrity at ${Math.round(hp)} percent.`,
+      `We have been hit. Suit integrity at ${Math.round(hp)} percent.`,
+      `That one landed. Suit integrity at ${Math.round(hp)} percent.`,
+    ]),
+  get downed() {
+    return pick([
+      'Suit integrity lost. Rebooting at the arrival point.',
+      'The suit is down. Rebooting at the arrival point.',
+      'That was the last of the armour. Restarting at the arrival point.',
+    ]);
+  },
   droneBump: [
-    'That was a drone, sir. Ramming is not an approved weapon system.',
+    'That was a drone. Ramming is not an approved weapon system.',
     'Contact with a sentinel. No damage — to us, at least.',
+    'You have flown into a drone. The missiles are considerably more effective.',
+    'Mid-air contact. I believe it was as surprised as we were.',
+    'Drone strike, in the least useful sense of the phrase.',
   ],
 };
 const DRONE_BUMP_COOLDOWN_MS = 2500;
 const GLOVE_SPRAY_MS = 1800; // how long one glove fist holds the water cannon open
 const INBOUND_COOLDOWN_MS = 6000;
 
+// A random take, but never the one this list gave last time.
+const lastPick = new Map(); // first entry of a list -> the last one picked from it
 function pick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
+  if (arr.length < 2) return arr[0];
+  const previous = lastPick.get(arr[0]);
+  let choice;
+  do {
+    choice = arr[Math.floor(Math.random() * arr.length)];
+  } while (choice === previous);
+  lastPick.set(arr[0], choice);
+  return choice;
 }
 
 // ---- Suit state ----
@@ -909,8 +1094,8 @@ function cyclePov() {
   povId = ids[(ids.indexOf(povId) + 1) % ids.length];
   setJarvis(
     povId
-      ? `Patching you into ${displayName(povId)}'s suit cam, sir.`
-      : 'Back on your suit, sir.',
+      ? `Patching you into ${displayName(povId)}'s suit cam.`
+      : 'Back on your suit.',
   );
   refreshPov();
 }
@@ -1005,8 +1190,8 @@ async function boot() {
     setInputHint(suit.mode);
     setJarvis(
       ok
-        ? 'Glove uplink established. Hand control is yours, sir.'
-        : 'Glove uplink lost. Reverting to keyboard, sir.',
+        ? 'Glove uplink established. Hand control is yours.'
+        : 'Glove uplink lost. Reverting to keyboard.',
     );
   });
   onConnectGlove(() => {
@@ -1154,7 +1339,7 @@ async function boot() {
     onStatus: (s) => {
       setNet(s.toUpperCase());
       if (s === 'online') {
-        setJarvis('SpacetimeDB link established. Telemetry streaming, sir.');
+        setJarvis('SpacetimeDB link established. Telemetry streaming.');
         console.log('[stdb] online — join_game sent, streaming update_orientation');
       } else if (s === 'offline' || s === 'error') {
         console.warn(`[stdb] link ${s} — flying on local physics only`);
@@ -1179,20 +1364,34 @@ async function boot() {
   // Missions: the HUD launchers, or 1 / 2 / 3. The live mission's own control
   // (or M) ends it. The drones only exist while theirs is on.
   const MISSION_KEYS = { Digit1: 'drones', Digit2: 'fire', Digit3: 'run' };
+  // The drone strike is won when the fleet that launched has been shot down:
+  // `peak` is how many drones it had, `kills` how many have fallen since.
+  const fleet = { peak: 0, kills: 0 };
+  // Names, not the lines themselves: each read of JARVIS_LINES is a fresh take.
   const MISSION_LINES = {
-    drones: [JARVIS_LINES.missionOn, JARVIS_LINES.missionOff],
-    fire: [JARVIS_LINES.fireOn, JARVIS_LINES.fireOff],
-    run: [JARVIS_LINES.runOn, JARVIS_LINES.runOff],
+    drones: ['missionOn', 'missionOff'],
+    fire: ['fireOn', 'fireOff'],
+    run: ['runOn', 'runOff'],
   };
   function endMission(announce = true) {
     if (!mission) return;
     if (mission === 'drones') stdb.endMission();
     else missions.stop();
     if (announce) {
-      setJarvis(MISSION_LINES[mission][1]);
+      setJarvis(JARVIS_LINES[MISSION_LINES[mission][1]]);
       sfx('missionEnd');
     }
     setMission(null);
+  }
+  // Won or lost. Either way the mission is over and stays over: the pilot
+  // launches the next one themselves.
+  function finishMission(won, line, detail = '') {
+    if (!mission) return;
+    sfx(won ? 'missionComplete' : 'downed');
+    if (won) flashCombat('kill');
+    showMissionResult(won, detail);
+    setJarvis(line, { urgent: true });
+    endMission(false);
   }
   function toggleMission(kind) {
     if (arriving) return;
@@ -1212,7 +1411,9 @@ async function boot() {
       missions.start(kind, suit);
     }
     setMission(kind);
-    setJarvis(MISSION_LINES[kind][0], { urgent: true });
+    fleet.peak = 0;
+    fleet.kills = 0;
+    setJarvis(JARVIS_LINES[MISSION_LINES[kind][0]], { urgent: true });
     sfx('missionStart');
   }
   onMissionButton(toggleMission);
@@ -1288,9 +1489,9 @@ async function boot() {
     onError: (reason) => {
       setTalkState('idle');
       duck(false);
-      if (reason === 'denied') setJarvis('I need microphone access to hear you, sir.');
-      else if (reason === 'unavailable') setJarvis('Voice input is unavailable in this browser, sir.');
-      else setJarvis("I didn't catch that, sir.");
+      if (reason === 'denied') setJarvis('I need microphone access to hear you.');
+      else if (reason === 'unavailable') setJarvis('Voice input is unavailable in this browser.');
+      else setJarvis("I didn't catch that.");
     },
   });
   setTalkAvailable(listener.supported);
@@ -1416,13 +1617,12 @@ async function boot() {
         sfx('ringMiss', { gap: 1500 });
         setJarvis(JARVIS_LINES.runMissed);
       } else if (event.type === 'complete') {
-        sfx('missionComplete');
-        flashCombat('kill');
         const time = formatTime(event.seconds);
-        setJarvis(mission === 'fire' ? JARVIS_LINES.fireDone(time) : JARVIS_LINES.runDone(time, event.record), {
-          urgent: true,
-        });
-        endMission(false);
+        finishMission(
+          true,
+          mission === 'fire' ? JARVIS_LINES.fireDone(time) : JARVIS_LINES.runDone(time, event.record),
+          event.record ? `${time} · NEW RECORD` : time,
+        );
       }
     }
     updateMissionPanel(missions.hud());
@@ -1478,6 +1678,15 @@ async function boot() {
           : JARVIS_LINES.wingmanKill(displayName(owner), drone.type),
       );
     }
+    if (mission === 'drones') {
+      // The most drones seen in the air at once. (Not alive + kills: against an
+      // older server module that still respawns them, that would never settle.)
+      fleet.peak = Math.max(fleet.peak, battle.drones);
+      fleet.kills += battle.kills.length;
+      if (fleet.peak > 0 && (battle.drones === 0 || fleet.kills >= fleet.peak)) {
+        finishMission(true, JARVIS_LINES.missionWon, `${fleet.kills} DRONES DESTROYED`);
+      }
+    }
     for (const hit of battle.hits) {
       if (hit.id === PLAYER_ID) {
         flashCombat('hit');
@@ -1492,8 +1701,12 @@ async function boot() {
           localSensors.surface = undefined;
           trailClearNeeded = true;
           combat.rearm(PLAYER_ID);
-          sfx('downed');
-          setJarvis(JARVIS_LINES.downed, { urgent: true });
+          if (mission) {
+            finishMission(false, JARVIS_LINES.missionFailed, 'SUIT INTEGRITY LOST');
+          } else {
+            sfx('downed');
+            setJarvis(JARVIS_LINES.downed, { urgent: true });
+          }
         }
       } else {
         const pilot = pilots.get(hit.id);

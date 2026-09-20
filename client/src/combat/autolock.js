@@ -21,7 +21,7 @@ import { chaseRig } from '../cesium/camera.js';
 
 const CONE = THREE.MathUtils.degToRad(15);
 const HOLD_CONE = THREE.MathUtils.degToRad(30); // a confirmed lock survives out to here
-const LOCK_SECONDS = 2;
+const LOCK_SECONDS = 1.2; // s a drone must be held in the cone before the lock confirms
 const MAX_RANGE = 1200; // m from the camera
 
 const RETICLE_FIT = 2.2; // reticle radius, in drone radii, while tracking

@@ -66,6 +66,36 @@ const SCENES = {
       <g fill="#0a101d">${treeLine(0, 180, 350, '#0a101d', 5)}${treeLine(620, 800, 350, '#0a101d', 8)}</g>`,
   },
 
+  // McKeldin Library at the head of its mall: red brick, white portico.
+  umd: {
+    sky: ['#2a0d14', '#8f2f2a', '#f5b85a'],
+    sun: { x: 210, y: 300, r: 50, fill: '#ffe2a3' },
+    draw: () => `
+      <g>${treeLine(0, 250, 330, '#3a1418', 41)}${treeLine(550, 800, 330, '#3a1418', 42)}</g>
+      <g fill="#7a2a22">
+        <rect x="230" y="262" width="340" height="86"/>
+        <rect x="330" y="236" width="140" height="30"/>
+      </g>
+      <g fill="#1a080b">
+        <path d="M222,264h356l-14,-14h-328z"/>
+        <path d="M322,238h156l-78,-34z"/>
+        <rect x="392" y="176" width="16" height="30"/>
+        <path d="M388,178q12,-24 24,0z"/>
+        <rect x="399" y="140" width="2" height="18"/>
+      </g>
+      <g fill="#f3e6d2">
+        <rect x="336" y="240" width="128" height="6"/>
+        ${[344, 366, 388, 410, 432, 454].map((x) => `<rect x="${x - 4}" y="246" width="8" height="100"/>`).join('')}
+      </g>
+      <g fill="#ffd98a" opacity="0.85">
+        ${[250, 276, 302, 488, 514, 540].map((x) => `<rect x="${x}" y="282" width="10" height="20"/><rect x="${x}" y="314" width="10" height="20"/>`).join('')}
+      </g>
+      <rect y="346" width="800" height="104" fill="#16240f"/>
+      <path d="M372,346h56l120,104h-296z" fill="#2f4a1f"/>
+      <path d="M396,346h8l16,104h-40z" fill="#c9b48a" opacity="0.55"/>
+      <g>${treeLine(0, 220, 372, '#0d1608', 43)}${treeLine(580, 800, 372, '#0d1608', 44)}</g>`,
+  },
+
   // Liberty from the harbor, lower Manhattan behind her.
   'statue-of-liberty': {
     sky: ['#0a2438', '#2f6f7d', '#f4b877'],

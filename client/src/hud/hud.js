@@ -143,6 +143,24 @@ function formatClock(seconds) {
   return `${m}:${(seconds - m * 60).toFixed(1).padStart(4, '0')}`;
 }
 
+// The outcome of a mission, across the middle of the visor for a few seconds.
+const RESULT_MS = 4500;
+let resultTimer = null;
+export function showMissionResult(won, detail = '') {
+  const el = document.getElementById('mission-result');
+  if (!el) return;
+  document.getElementById('mission-result-title').textContent = won ? 'ACCOMPLISHED' : 'FAILED';
+  document.getElementById('mission-result-detail').textContent = detail;
+  el.dataset.outcome = won ? 'won' : 'lost';
+  el.hidden = true; // restart the entrance animation if one is already showing
+  void el.offsetWidth;
+  el.hidden = false;
+  clearTimeout(resultTimer);
+  resultTimer = setTimeout(() => {
+    el.hidden = true;
+  }, RESULT_MS);
+}
+
 // The sound switch.
 export function setAudioButton(on) {
   if (els.audioBtn) els.audioBtn.textContent = on ? 'SOUND ON' : 'SOUND OFF';
@@ -350,7 +368,7 @@ export function setTalkState(state, heard = '') {
     els.talkBtn.innerHTML =
       state === 'listening' ? '<span class="key">T</span> LISTENING…' : state === 'thinking' ? '<span class="key">T</span> THINKING…' : '<span class="key">T</span> TALK TO JARVIS';
   }
-  if (state !== 'idle' && els.jarvis) els.jarvis.textContent = heard ? `“${heard}”` : 'Listening, sir…';
+  if (state !== 'idle' && els.jarvis) els.jarvis.textContent = heard ? `“${heard}”` : 'Listening…';
 }
 
 export function setTalkAvailable(available) {

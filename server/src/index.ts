@@ -270,8 +270,10 @@ export const apply_damage = spacetimedb.reducer(
   }
 );
 
-// destroy_sentinel — a pilot's missile reached the drone. Removes it and
-// queues a replacement at a random waypoint so the fight keeps going.
+// destroy_sentinel — a pilot's missile reached the drone. Removes it for good:
+// a mission is its one fleet, and is won when the last of it is down (the
+// client calls the win and ends the mission). The sentinel_respawn table stays
+// in the schema, unused, so publishing this needs no migration.
 export const destroy_sentinel = spacetimedb.reducer(
   { sentinel_id: t.u32(), player_id: t.string() },
   (ctx, { sentinel_id, player_id }) => {
@@ -279,13 +281,6 @@ export const destroy_sentinel = spacetimedb.reducer(
     if (!drone) return; // someone else got there first
     ctx.db.sentinelState.sentinel_id.delete(sentinel_id);
     logEvent(ctx, "KILL", player_id, `${drone.drone_type} sentinel ${sentinel_id} destroyed`);
-    if (!ctx.db.sentinelRespawn.sentinel_id.find(sentinel_id)) {
-      ctx.db.sentinelRespawn.insert({
-        sentinel_id,
-        drone_type: drone.drone_type,
-        respawn_at: after(ctx.timestamp, RESPAWN_S),
-      });
-    }
   }
 );
 
@@ -353,7 +348,6 @@ const FLEE_ENTER_M = 120; // fleeing drones bolt inside this range...
 const FLEE_EXIT_M = 220; // ...and calm down beyond this one
 
 const COLLIDE_M = 9; // suit + drone radii; contact is a shove, never damage
-const RESPAWN_S = 8;
 const PLAYER_LIVE_S = 3; // a pilot row older than this is not flying
 const IDLE_PARK_S = 60; // stop ticking after this long without a pilot
 const TICK_MICROS = 100_000n;
@@ -481,10 +475,6 @@ function withLength(v: Vec, l: number): Vec {
   return m > 1e-6 ? { e: (v.e / m) * l, n: (v.n / m) * l, u: (v.u / m) * l } : { e: 0, n: 0, u: 0 };
 }
 
-function after(ts: Timestamp, seconds: number): Timestamp {
-  return new Timestamp(ts.microsSinceUnixEpoch + BigInt(Math.round(seconds * 1e6)));
-}
-
 function secondsBetween(later: Timestamp, earlier: Timestamp): number {
   return Number(later.microsSinceUnixEpoch - earlier.microsSinceUnixEpoch) / 1e6;
 }
@@ -552,7 +542,8 @@ function avoidPerimeter(area: Area, pos: Vec, want: Vec): Vec {
 }
 
 // tick_sentinels — scheduled every 100 ms. Flies every drone one step,
-// fires attackers' missiles, sweeps spent missiles and respawns the fallen.
+// fires attackers' missiles and sweeps spent missiles. (Nothing queues a
+// respawn any more; the sweep below only clears rows left by an older module.)
 export const tick_sentinels = spacetimedb.reducer(
   { onSchedule: sentinelTick },
   { tick: sentinelTick.rowType },

@@ -69,34 +69,34 @@ function findSite(text) {
 function statusLine(c) {
   const parts = [`Suit integrity ${c.health} percent`, `${c.altitude} metres up at ${c.speed} metres per second`];
   if (c.mission) parts.push(c.missionStatus || `${c.mission} mission in progress`);
-  return `${parts.join(', ')}, sir.`;
+  return `${parts.join(', ')}.`;
 }
 
 const RULES = [
-  [/\b(end|stop|abort|cancel|stand down)\b.*\b(mission|run|it)\b|\bstand down\b/, 'end_mission', 'Standing down, sir.'],
-  [/\b(fire|fires|water|extinguish|burning)\b/, 'start_fire', 'Fire response it is, sir.'],
-  [/\b(drone|drones|hostile|hostiles|combat|strike|fight)\b/, 'start_drones', 'Launching the drones, sir. Do be careful.'],
-  [/\b(run|race|gates?|course|rings?|downtown|time trial)\b/, 'start_run', 'Plotting a course, sir.'],
-  [/\b(unmute|sound on|audio on)\b/, 'unmute', 'Sound restored, sir.'],
-  [/\b(mute|quiet|silence|sound off|audio off)\b/, 'mute', 'Going quiet, sir.'],
-  [/\b(reset|respawn|restart|start over|take me back)\b/, 'reset_position', 'Returning you to the arrival point, sir.'],
-  [/\b(switch|change|other)\b.*\b(view|camera|pov)\b|\bsuit cam\b/, 'switch_view', 'Switching view, sir.'],
+  [/\b(end|stop|abort|cancel|stand down)\b.*\b(mission|run|it)\b|\bstand down\b/, 'end_mission', 'Standing down.'],
+  [/\b(fire|fires|water|extinguish|burning)\b/, 'start_fire', 'Fire response it is.'],
+  [/\b(drone|drones|hostile|hostiles|combat|strike|fight)\b/, 'start_drones', 'Launching the drones. Do be careful.'],
+  [/\b(run|race|gates?|course|rings?|downtown|time trial)\b/, 'start_run', 'Plotting a course.'],
+  [/\b(unmute|sound on|audio on)\b/, 'unmute', 'Sound restored.'],
+  [/\b(mute|quiet|silence|sound off|audio off)\b/, 'mute', 'Going quiet.'],
+  [/\b(reset|respawn|restart|start over|take me back)\b/, 'reset_position', 'Returning you to the arrival point.'],
+  [/\b(switch|change|other)\b.*\b(view|camera|pov)\b|\bsuit cam\b/, 'switch_view', 'Switching view.'],
 ];
 
 function answerLocally(text, context) {
   const words = text.toLowerCase();
   const site = /\b(take me|go|fly|travel|head|location|destination)\b/.test(words) ? findSite(words) : null;
-  if (site) return { reply: `Setting course for ${site.name}, sir.`, action: 'change_site', site: site.id };
+  if (site) return { reply: `Setting course for ${site.name}.`, action: 'change_site', site: site.id };
   if (/\b(status|report|how am i|how are we|integrity|health|damage)\b/.test(words)) {
     return { reply: statusLine(context), action: 'none' };
   }
-  if (/\bwhere\b/.test(words)) return { reply: `Over ${context.site}, sir.`, action: 'none' };
+  if (/\bwhere\b/.test(words)) return { reply: `Over ${context.site}.`, action: 'none' };
   for (const [pattern, action, reply] of RULES) {
     if (pattern.test(words)) return { reply, action };
   }
-  if (/\b(hello|hi|hey|you there|jarvis)\b/.test(words)) return { reply: 'At your service, sir.', action: 'none' };
-  if (/\b(thanks|thank you)\b/.test(words)) return { reply: 'Always a pleasure, sir.', action: 'none' };
-  return { reply: "I'm afraid I didn't follow that, sir. Try a mission, a status report, or a destination.", action: 'none' };
+  if (/\b(hello|hi|hey|you there|jarvis)\b/.test(words)) return { reply: 'At your service.', action: 'none' };
+  if (/\b(thanks|thank you)\b/.test(words)) return { reply: 'Always a pleasure.', action: 'none' };
+  return { reply: "I'm afraid I didn't follow that. Try a mission, a status report, or a destination.", action: 'none' };
 }
 
 /**
@@ -113,7 +113,7 @@ export async function askJarvis(text, context) {
   const thought = Boolean(answer);
   answer ??= answerLocally(text, context);
   if (answer.action === 'change_site' && !SITES.some((s) => s.id === answer.site)) {
-    answer = { reply: "I don't have that destination on file, sir.", action: 'none' };
+    answer = { reply: "I don't have that destination on file.", action: 'none' };
   }
   remember('user', text);
   remember('model', answer.reply);

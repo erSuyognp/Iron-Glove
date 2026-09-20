@@ -56,6 +56,23 @@ export const SITES = [
     ],
   },
   {
+    id: 'umd',
+    name: 'University of Maryland',
+    short: 'COLLEGE PARK',
+    spoken: ['Maryland', 'UMD', 'College Park', 'Terps'],
+    place: 'College Park, Maryland · USA',
+    era: 'EST. 1856',
+    blurb: 'Down the length of McKeldin Mall to the library steps, red brick and white columns all the way.',
+    // Centred on McKeldin Mall; arrive from the Main Administration end,
+    // looking west up the mall at McKeldin Library.
+    longitude: -76.9426,
+    latitude: 38.986,
+    altitude: 220,
+    heading: 270,
+    approach: 400,
+    radius: 1200,
+  },
+  {
     id: 'statue-of-liberty',
     name: 'Statue of Liberty',
     short: 'LIBERTY ISLAND',
