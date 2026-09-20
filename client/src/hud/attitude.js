@@ -23,16 +23,16 @@ function buildLadder() {
     const y = 200 - a * PITCH_PX;
     if (a === 0) {
       // Horizon line, full width.
-      s += `<line x1="60" y1="${y}" x2="340" y2="${y}" stroke="#00ccff" stroke-width="2"/>`;
+      s += `<line x1="60" y1="${y}" x2="340" y2="${y}" stroke="#6fe3ff" stroke-width="2"/>`;
     } else if (a % 10 === 0) {
       const half = 66;
-      s += `<line x1="${200 - half}" y1="${y}" x2="${200 - 22}" y2="${y}" stroke="#00ccff" stroke-width="1.5"/>`;
-      s += `<line x1="${200 + 22}" y1="${y}" x2="${200 + half}" y2="${y}" stroke="#00ccff" stroke-width="1.5"/>`;
-      s += `<text x="${200 - half - 6}" y="${y + 4}" fill="#00ccff" font-size="11" text-anchor="end" font-family="monospace">${Math.abs(a)}</text>`;
-      s += `<text x="${200 + half + 6}" y="${y + 4}" fill="#00ccff" font-size="11" text-anchor="start" font-family="monospace">${Math.abs(a)}</text>`;
+      s += `<line x1="${200 - half}" y1="${y}" x2="${200 - 22}" y2="${y}" stroke="#6fe3ff" stroke-width="1.5"/>`;
+      s += `<line x1="${200 + 22}" y1="${y}" x2="${200 + half}" y2="${y}" stroke="#6fe3ff" stroke-width="1.5"/>`;
+      s += `<text x="${200 - half - 6}" y="${y + 4}" fill="#6fe3ff" font-size="11" text-anchor="end" font-family="monospace">${Math.abs(a)}</text>`;
+      s += `<text x="${200 + half + 6}" y="${y + 4}" fill="#6fe3ff" font-size="11" text-anchor="start" font-family="monospace">${Math.abs(a)}</text>`;
     } else {
-      s += `<line x1="${200 - 34}" y1="${y}" x2="${200 - 22}" y2="${y}" stroke="#00ccff" stroke-width="1" opacity="0.7"/>`;
-      s += `<line x1="${200 + 22}" y1="${y}" x2="${200 + 34}" y2="${y}" stroke="#00ccff" stroke-width="1" opacity="0.7"/>`;
+      s += `<line x1="${200 - 34}" y1="${y}" x2="${200 - 22}" y2="${y}" stroke="#6fe3ff" stroke-width="1" opacity="0.7"/>`;
+      s += `<line x1="${200 + 22}" y1="${y}" x2="${200 + 34}" y2="${y}" stroke="#6fe3ff" stroke-width="1" opacity="0.7"/>`;
     }
   }
   return s;
@@ -66,7 +66,7 @@ export function initAttitude() {
         <defs>
           <clipPath id="adi-clip"><circle cx="200" cy="200" r="150"/></clipPath>
         </defs>
-        <circle cx="200" cy="200" r="150" fill="none" stroke="#00ccff" stroke-width="1" opacity="0.35"/>
+        <circle cx="200" cy="200" r="150" fill="none" stroke="#6fe3ff" stroke-width="1" opacity="0.35"/>
         <g clip-path="url(#adi-clip)">
           <g id="adi-roll">
             <g id="adi-pitch">${buildLadder()}</g>
@@ -74,14 +74,14 @@ export function initAttitude() {
           </g>
         </g>
         <!-- Fixed top index for the bank arc -->
-        <polygon points="200,54 194,42 206,42" fill="#ffcf3f"/>
+        <polygon points="200,54 194,42 206,42" fill="#ffc857"/>
         <!-- Fixed waterline / aircraft reference -->
-        <g stroke="#ffcf3f" stroke-width="2.5" fill="none">
+        <g stroke="#ffc857" stroke-width="2.5" fill="none">
           <line x1="150" y1="200" x2="182" y2="200"/>
           <polyline points="182,200 191,209 200,200 209,209 218,200"/>
           <line x1="218" y1="200" x2="250" y2="200"/>
         </g>
-        <circle cx="200" cy="200" r="2.5" fill="#ffcf3f"/>
+        <circle cx="200" cy="200" r="2.5" fill="#ffc857"/>
       </svg>`;
     adiPitch = document.getElementById('adi-pitch');
     adiRoll = document.getElementById('adi-roll');
@@ -92,10 +92,10 @@ export function initAttitude() {
     ht.innerHTML = `
       <svg viewBox="0 0 340 48" width="100%" height="100%">
         <g id="ht-marks">${buildHeadingMarks()}</g>
-        <polygon points="170,30 164,42 176,42" fill="#ffcf3f"/>
-        <line x1="170" y1="14" x2="170" y2="32" stroke="#ffcf3f" stroke-width="1.5"/>
-        <rect x="150" y="34" width="40" height="14" fill="rgba(10,14,26,0.7)" stroke="#00ccff" stroke-width="0.75"/>
-        <text id="ht-readout" x="170" y="45" fill="#00ccff" font-size="11" text-anchor="middle" font-family="monospace">000</text>
+        <polygon points="170,30 164,42 176,42" fill="#ffc857"/>
+        <line x1="170" y1="14" x2="170" y2="32" stroke="#ffc857" stroke-width="1.5"/>
+        <rect x="150" y="34" width="40" height="14" fill="rgba(10,14,26,0.7)" stroke="#6fe3ff" stroke-width="0.75"/>
+        <text id="ht-readout" x="170" y="45" fill="#6fe3ff" font-size="11" text-anchor="middle" font-family="monospace">000</text>
       </svg>`;
     htMarks = document.getElementById('ht-marks');
     htReadout = document.getElementById('ht-readout');
@@ -112,16 +112,16 @@ function buildHeadingMarks() {
     const x = d * HDG_PX;
     const dd = ((d % 360) + 360) % 360;
     if (dd % 10 === 0) {
-      s += `<line x1="${x}" y1="30" x2="${x}" y2="16" stroke="#00ccff" stroke-width="1.5"/>`;
+      s += `<line x1="${x}" y1="30" x2="${x}" y2="16" stroke="#6fe3ff" stroke-width="1.5"/>`;
       let label;
       if (dd === 0) label = 'N';
       else if (dd === 90) label = 'E';
       else if (dd === 180) label = 'S';
       else if (dd === 270) label = 'W';
       else label = String(dd / 10).padStart(2, '0');
-      s += `<text x="${x}" y="12" fill="#00ccff" font-size="10" text-anchor="middle" font-family="monospace">${label}</text>`;
+      s += `<text x="${x}" y="12" fill="#6fe3ff" font-size="10" text-anchor="middle" font-family="monospace">${label}</text>`;
     } else {
-      s += `<line x1="${x}" y1="30" x2="${x}" y2="23" stroke="#00ccff" stroke-width="1" opacity="0.6"/>`;
+      s += `<line x1="${x}" y1="30" x2="${x}" y2="23" stroke="#6fe3ff" stroke-width="1" opacity="0.6"/>`;
     }
   }
   return s;

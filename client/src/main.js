@@ -5,7 +5,7 @@ import { initBoundary } from './cesium/boundary.js';
 import { site, chooseSite, settleSite, findSite } from './sites.js';
 import { pickSite } from './landing/landing.js';
 import { loadSite } from './landing/loading.js';
-import { initKeyboard, readAxes, setSpaceFires, consumeFireKey } from './input/keyboard.js';
+import { initKeyboard, readAxes, setSpaceFires, consumeFireKey, isDown } from './input/keyboard.js';
 import {
   connectGlove,
   setGloveConnectionHandler,
@@ -35,10 +35,17 @@ import {
   updateCombatHud,
   flashCombat,
   setSiteName,
-  setMissionButton,
+  setMissionButtons,
   onMissionButton,
+  updateMissionPanel,
   onChangeSite,
+  onJarvisLine,
+  setAudioButton,
+  onAudioButton,
 } from './hud/hud.js';
+import { initAudio, sfx, updateFlightAudio, isMuted, setMuted } from './audio/sound.js';
+import { speak } from './audio/voice.js';
+import { createMissions, formatTime } from './missions/missions.js';
 import { createCombat } from './combat/combat.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
 import { createTracker } from './hud/tracker.js';
@@ -177,6 +184,19 @@ const JARVIS_LINES = {
       : `Flight perimeter engaged. Keeping you over ${site.name}, sir.`,
   missionOn: 'Mission active. Four hostile drones inbound — two will shoot back, sir.',
   missionOff: 'Mission ended. Drones standing down, sir.',
+  missionBusy: 'One mission at a time, sir. End the current one first.',
+  fireOn: 'Multiple fires reported, sir. Water cannon armed — hold F over each one.',
+  fireOff: 'Fire response stood down, sir.',
+  fireOut: (left) =>
+    left > 1 ? `Fire out. ${left} still burning, sir.` : left === 1 ? 'Fire out. One left, sir.' : 'Fire out.',
+  fireDone: (time) => `All fires extinguished in ${time}. The city thanks you, sir.`,
+  tankEmpty: 'Water tank empty, sir. Give it a moment to refill.',
+  runOn: 'Course plotted through the city, sir. Twelve gates — do try not to clip the architecture.',
+  runOff: 'Run abandoned, sir.',
+  runHalf: 'Halfway, sir. Keep it tight.',
+  runMissed: 'Wide of the gate, sir. Come around again.',
+  runDone: (time, record) =>
+    record ? `Course complete in ${time}. A new record, sir.` : `Course complete in ${time}, sir.`,
   missionNoLink: 'No SpacetimeDB link, sir. I cannot launch the drones without it.',
   bump: [
     'Structural contact. The architecture is not the enemy, sir.',
@@ -205,6 +225,7 @@ const JARVIS_LINES = {
   ],
 };
 const DRONE_BUMP_COOLDOWN_MS = 2500;
+const GLOVE_SPRAY_MS = 1800; // how long one glove fist holds the water cannon open
 const INBOUND_COOLDOWN_MS = 6000;
 
 function pick(arr) {
@@ -423,6 +444,7 @@ function stepFlight(dt) {
 
   if (flySuit(suit, input, dt) && performance.now() >= boundaryWarnUntil) {
     boundaryWarnUntil = performance.now() + BOUNDARY_WARN_COOLDOWN_MS;
+    sfx('warn');
     setJarvis(JARVIS_LINES.perimeter());
   }
 
@@ -461,6 +483,7 @@ function stepFlight(dt) {
 
 function triggerRepulsor(viewer) {
   flashRepulsor();
+  sfx('repulsor');
   setJarvis(pick(REPULSOR_LINES));
 
   if (repulsor) {
@@ -890,6 +913,17 @@ function cyclePov() {
 async function boot() {
   initHUD();
   initAttitude();
+  initAudio();
+  onJarvisLine(speak);
+  setAudioButton(!isMuted());
+  const toggleAudio = () => {
+    setMuted(!isMuted());
+    setAudioButton(!isMuted());
+  };
+  onAudioButton(toggleAudio);
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyN' && !e.repeat) toggleAudio();
+  });
 
   if (!hasValidToken()) {
     showBanner(
@@ -976,6 +1010,7 @@ async function boot() {
   worldPromise.then((v) => v && setSunFor(v, site));
   await loadSite(worldPromise, spawnState);
   suit = spawnState();
+  sfx('arrive');
 
   let viewer;
   try {
@@ -1011,7 +1046,7 @@ async function boot() {
     suit = spawnState();
     localSensors.surface = undefined;
     boundary = initBoundary(viewer, site);
-    setMissionButton(false, true);
+    setMissionButtons(null, true);
     hideBanner();
   }
   if (arriving) {
@@ -1024,7 +1059,7 @@ async function boot() {
     setTimeout(arrive, ARRIVAL_TIMEOUT_MS);
   } else {
     boundary = initBoundary(viewer, site);
-    setMissionButton(false, true);
+    setMissionButtons(null, true);
   }
   const overlay = initSuitOverlay(viewer, '/iron_man_ucm.glb');
   const suit3d = overlay.createSuit({ name: PLAYER_ID });
@@ -1064,11 +1099,14 @@ async function boot() {
     refreshPov();
   }
 
-  let missionActive = false;
-  function setMission(active) {
-    missionActive = active;
-    setMissionButton(active, !arriving);
+  // One mission at a time: 'drones' (flown by the server), or 'fire' / 'run',
+  // which run entirely here (missions/).
+  let mission = null;
+  function setMission(kind) {
+    mission = kind;
+    setMissionButtons(kind, !arriving);
   }
+  const missions = createMissions({ viewer, sensorExclude });
 
   // Drones, autolock and missiles. The server flies the drones; rows arrive
   // through the SpacetimeDB link below.
@@ -1077,7 +1115,8 @@ async function boot() {
     combat.onMissile(row, live);
     if (live && row.targetPlayerId === PLAYER_ID && performance.now() >= inboundWarnUntil) {
       inboundWarnUntil = performance.now() + INBOUND_COOLDOWN_MS;
-      setJarvis(JARVIS_LINES.inbound);
+      sfx('inbound');
+      setJarvis(JARVIS_LINES.inbound, { urgent: true });
     }
   }
 
@@ -1088,6 +1127,8 @@ async function boot() {
     window.__pilots = pilots;
     window.__pilotRow = (row, live = true) => upsertPilot(row, live);
     window.__combat = combat;
+    window.__missions = missions;
+    window.__suit = () => suit;
     window.__sentinelRow = (row) => combat.onSentinel(row);
     window.__sentinelGone = (sentinelId) => combat.onSentinelGone({ sentinelId });
     window.__missileRow = (row) => missileInbound(row, true);
@@ -1110,7 +1151,7 @@ async function boot() {
       }
       // A new link starts with the sky cleared (client.js), and a lost one
       // takes the drones with it.
-      if (s !== 'connected') setMission(false);
+      if (s !== 'connected' && mission === 'drones') setMission(null);
     },
     onPlayer: (row, live) => {
       // Our own row confirms the telemetry round-trip. It must not drive the
@@ -1125,21 +1166,50 @@ async function boot() {
   });
   stdb.start();
 
-  // ACTIVATE MISSION (the HUD button, or M): the drones only exist while a
-  // mission is on. The same control ends it.
-  function toggleMission() {
+  // Missions: the HUD launchers, or 1 / 2 / 3. The live mission's own control
+  // (or M) ends it. The drones only exist while theirs is on.
+  const MISSION_KEYS = { Digit1: 'drones', Digit2: 'fire', Digit3: 'run' };
+  const MISSION_LINES = {
+    drones: [JARVIS_LINES.missionOn, JARVIS_LINES.missionOff],
+    fire: [JARVIS_LINES.fireOn, JARVIS_LINES.fireOff],
+    run: [JARVIS_LINES.runOn, JARVIS_LINES.runOff],
+  };
+  function endMission(announce = true) {
+    if (!mission) return;
+    if (mission === 'drones') stdb.endMission();
+    else missions.stop();
+    if (announce) {
+      setJarvis(MISSION_LINES[mission][1]);
+      sfx('missionEnd');
+    }
+    setMission(null);
+  }
+  function toggleMission(kind) {
     if (arriving) return;
-    const ok = missionActive ? stdb.endMission() : stdb.activateMission(site);
-    if (!ok) {
-      setJarvis(JARVIS_LINES.missionNoLink);
+    if (mission === kind) return endMission();
+    if (mission) {
+      setJarvis(JARVIS_LINES.missionBusy);
+      sfx('dry');
       return;
     }
-    setMission(!missionActive);
-    setJarvis(missionActive ? JARVIS_LINES.missionOn : JARVIS_LINES.missionOff);
+    if (kind === 'drones') {
+      if (!stdb.activateMission(site)) {
+        setJarvis(JARVIS_LINES.missionNoLink);
+        sfx('dry');
+        return;
+      }
+    } else {
+      missions.start(kind, suit);
+    }
+    setMission(kind);
+    setJarvis(MISSION_LINES[kind][0], { urgent: true });
+    sfx('missionStart');
   }
   onMissionButton(toggleMission);
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyM' && !e.repeat) toggleMission();
+    if (e.repeat) return;
+    if (MISSION_KEYS[e.code]) toggleMission(MISSION_KEYS[e.code]);
+    else if (e.code === 'KeyM') mission ? endMission() : toggleMission('drones');
   });
 
   // Cesium's canvas is resized from here (its own render loop is off), but
@@ -1153,6 +1223,8 @@ async function boot() {
   window.addEventListener('resize', flagResize); // also fires on a device-pixel-ratio change
 
   // Game loop.
+  let wasBoosting = false;
+  let gloveSprayUntil = 0; // a fist holds the water cannon open this long
   let last = performance.now();
   function frame(now) {
     let dt = (now - last) / 1000;
@@ -1161,7 +1233,10 @@ async function boot() {
 
     if (!arriving) {
       stepFlight(dt);
-      if (collide(viewer, suit, localSensors, now)) setJarvis(pick(JARVIS_LINES.bump));
+      if (collide(viewer, suit, localSensors, now)) {
+        setJarvis(pick(JARVIS_LINES.bump));
+        sfx('bump', { gap: 400 });
+      }
     }
     // Fire command: Space (only while a drone is locked) or a flick of the
     // glove. A flick also reads as a fist, so with a lock it is the missile
@@ -1169,7 +1244,8 @@ async function boot() {
     const gloveFire = isGloveConnected() && consumeFire();
     const fire = consumeFireKey() || gloveFire;
     if (isGloveConnected() && consumeFist() && !(gloveFire && lockState === 'LOCKED')) {
-      triggerRepulsor(viewer);
+      if (mission === 'fire') gloveSprayUntil = now + GLOVE_SPRAY_MS;
+      else triggerRepulsor(viewer);
     }
     stepRepulsor(viewer, now);
 
@@ -1233,7 +1309,35 @@ async function boot() {
     updateChaseCamera(viewer, watched ? watched.view : view);
     localTag.show = Boolean(watched);
     // The blue tracker rides that same suit and points at the other pilot.
-    tracker.update(watched ? watched.view : view, trackerTarget(watched, view), dt);
+    // With no other pilot to find, it points at the mission's next objective.
+    tracker.update(watched ? watched.view : view, trackerTarget(watched, view) ?? missions.target(suit), dt);
+
+    // --- Client missions (fire response, downtown run) ---
+    const spray = mission === 'fire' && !arriving && (isDown('KeyF') || now < gloveSprayUntil);
+    for (const event of missions.update({ dt, suit, spray })) {
+      if (event.type === 'extinguished') {
+        sfx('extinguish');
+        if (event.left > 0) setJarvis(JARVIS_LINES.fireOut(event.left));
+      } else if (event.type === 'tankEmpty') {
+        sfx('tankEmpty');
+        setJarvis(JARVIS_LINES.tankEmpty);
+      } else if (event.type === 'gate') {
+        sfx('ring');
+        if (event.passed === Math.floor(event.total / 2)) setJarvis(JARVIS_LINES.runHalf);
+      } else if (event.type === 'missed') {
+        sfx('ringMiss', { gap: 1500 });
+        setJarvis(JARVIS_LINES.runMissed);
+      } else if (event.type === 'complete') {
+        sfx('missionComplete');
+        flashCombat('kill');
+        const time = formatTime(event.seconds);
+        setJarvis(mission === 'fire' ? JARVIS_LINES.fireDone(time) : JARVIS_LINES.runDone(time, event.record), {
+          urgent: true,
+        });
+        endMission(false);
+      }
+    }
+    updateMissionPanel(missions.hud());
 
     // --- Drone combat ---
     // Every suit flown here fights: ours, and the phone pilots' (FIRE on the
@@ -1255,19 +1359,29 @@ async function boot() {
     }
     const battle = combat.update({ dt, suits: flown });
     const mine = battle.pilots.get(PLAYER_ID);
+    if (mine.lock !== lockState) {
+      if (mine.lock === 'LOCKED') sfx('lock');
+      else if (mine.lock === 'TRACKING' && lockState === 'CLEAR') sfx('track');
+    }
     lockState = mine.lock;
     setSpaceFires(mine.lock === 'LOCKED');
     // The combat readouts follow the camera, like the rest of the HUD.
     const shown = (watched && battle.pilots.get(watched.id)) || mine;
     updateCombatHud({ ...shown, drones: battle.drones });
 
-    if (mine.fired) setJarvis(pick(JARVIS_LINES.missileAway));
-    else if (mine.dry) setJarvis(JARVIS_LINES.rackEmpty);
+    if (mine.fired) {
+      sfx('missile');
+      setJarvis(pick(JARVIS_LINES.missileAway));
+    } else if (mine.dry) {
+      sfx('dry');
+      setJarvis(JARVIS_LINES.rackEmpty);
+    }
     for (const pilot of pilots.values()) {
       if (battle.pilots.get(pilot.id)?.fired) setJarvis(JARVIS_LINES.wingmanFired(pilot.name));
     }
     for (const { drone, owner } of battle.kills) {
       flashCombat('kill');
+      sfx('explosion');
       setJarvis(
         owner === PLAYER_ID
           ? JARVIS_LINES.kill(drone.type)
@@ -1277,6 +1391,7 @@ async function boot() {
     for (const hit of battle.hits) {
       if (hit.id === PLAYER_ID) {
         flashCombat('hit');
+        sfx('hit');
         suit.health = Math.max(0, suit.health - hit.damage);
         if (suit.health > 0) {
           setJarvis(JARVIS_LINES.struck(suit.health));
@@ -1287,7 +1402,8 @@ async function boot() {
           localSensors.surface = undefined;
           trailClearNeeded = true;
           combat.rearm(PLAYER_ID);
-          setJarvis(JARVIS_LINES.downed);
+          sfx('downed');
+          setJarvis(JARVIS_LINES.downed, { urgent: true });
         }
       } else {
         const pilot = pilots.get(hit.id);
@@ -1305,6 +1421,7 @@ async function boot() {
     }
     if (mine.bumped && now >= droneBumpUntil) {
       droneBumpUntil = now + DRONE_BUMP_COOLDOWN_MS;
+      sfx('bump');
       setJarvis(pick(JARVIS_LINES.droneBump));
     }
 
@@ -1317,6 +1434,19 @@ async function boot() {
       );
     }
     updateSpeedFx(speedRatio);
+
+    // Sound follows the suit on camera: jets with the throttle, wind with the
+    // speed, a kick when the boost comes in.
+    const boosting = !watched && !arriving && readAxes().boost && Math.abs(suit.speed) > 5;
+    if (boosting && !wasBoosting) sfx('boost', { gap: 900 });
+    wasBoosting = boosting;
+    updateFlightAudio({
+      live: true,
+      speed: speedRatio,
+      thrust: Math.abs(viewSpeed) / MAX_SPEED + Math.max(0, (watched ? watched.state.vspeed : suit.vspeed) || 0) / CLIMB_RATE * 0.5,
+      boost: boosting,
+      spray: missions.isSpraying(),
+    });
 
     // Afterburner trail: extend it while flying, let it drain when parked.
     // It streams from the boot jets, wherever the posed legs put them.
@@ -1365,8 +1495,9 @@ async function boot() {
       // Animated attitude indicator + heading tape.
       updateAttitude(suit.pitch, suit.roll + suit.bank, suit.heading);
 
-      // Ground proximity warning: flash when low.
+      // Ground proximity warning: flash (and sound) when low and moving.
       setGpws(agl < GPWS_ALT);
+      if (agl < GPWS_ALT && Math.abs(suit.speed) > 12) sfx('pullUp', { gap: 1100 });
 
       updateHUD({
         altitude: agl,

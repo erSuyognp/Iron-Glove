@@ -21,12 +21,13 @@ const HELP_KEYBOARD =
       <span class="key">Q</span>/<span class="key">E</span> roll
       <span class="key">Shift</span> boost
       <span class="key">Space</span> boost · fire when locked
-      <span class="key">M</span> mission
+      <span class="key">F</span> water
+      <span class="key">1</span><span class="key">2</span><span class="key">3</span> missions
       <span class="key">R</span> reset`;
 
 const HELP_GLOVE =
-  `roll 160 climb · roll 0 nose dive · roll −120 thrust · pitch lean · fist blast · flick to fire when locked
-      <span class="key">M</span> mission
+  `roll 160 climb · roll 0 nose dive · roll −120 thrust · pitch lean · fist blast / water · flick to fire when locked
+      <span class="key">1</span><span class="key">2</span><span class="key">3</span> missions
       <span class="key">R</span> reset`;
 
 export function initHUD() {
@@ -38,7 +39,19 @@ export function initHUD() {
   els.mode = document.getElementById('hud-mode');
   els.net = document.getElementById('hud-net');
   els.hp = document.getElementById('hud-suit-hp');
-  els.hpBar = document.getElementById('hud-suit-bar');
+  els.hpRing = document.getElementById('hud-suit-ring');
+  els.hpCore = els.hpRing?.closest('.suit-core');
+  els.arcSpd = document.getElementById('hud-arc-spd');
+  els.arcAlt = document.getElementById('hud-arc-alt');
+  els.audioBtn = document.getElementById('btn-audio');
+  els.missionPanel = document.getElementById('mission-panel');
+  els.missionTitle = document.getElementById('mission-title');
+  els.missionTime = document.getElementById('mission-time');
+  els.missionCount = document.getElementById('mission-count');
+  els.missionObjective = document.getElementById('mission-objective');
+  els.missionGauge = document.getElementById('mission-gauge');
+  els.missionGaugeLabel = document.getElementById('mission-gauge-label');
+  els.missionGaugeFill = document.getElementById('mission-gauge-fill');
   els.jarvis = document.getElementById('jarvis-ticker');
   els.speedBlur = document.getElementById('speed-blur');
   els.speedVignette = document.getElementById('speed-vignette');
@@ -55,7 +68,7 @@ export function initHUD() {
   els.combatFlash = document.getElementById('combat-flash');
   els.gpws = document.getElementById('gpws');
   els.site = document.getElementById('hud-site');
-  els.missionBtn = document.getElementById('btn-mission');
+  els.missionBtns = [...document.querySelectorAll('.hud-btn.mission[data-mission]')];
   els.changeSite = document.getElementById('btn-change-site');
 }
 
@@ -64,19 +77,76 @@ export function setSiteName(name) {
   if (els.site) els.site.textContent = name;
 }
 
-// The mission control: ACTIVATE MISSION launches the drones, END MISSION
-// stands them down. Disabled until the suit has arrived at the site.
-export function setMissionButton(active, enabled = true) {
-  const btn = els.missionBtn;
-  if (!btn) return;
-  btn.disabled = !enabled;
-  btn.classList.toggle('live', active);
-  btn.innerHTML = `${active ? 'END MISSION' : 'ACTIVATE MISSION'} <span class="key">M</span>`;
+// The mission launchers. `active` is the mission in progress ('drones' |
+// 'fire' | 'run') or null; pressing the live one ends it, and the others wait
+// their turn. All are disabled until the suit has arrived at the site.
+export function setMissionButtons(active, enabled = true) {
+  for (const btn of els.missionBtns ?? []) {
+    const live = btn.dataset.mission === active;
+    btn.disabled = !enabled || Boolean(active && !live);
+    btn.classList.toggle('live', live);
+  }
 }
 
+// handler(kind) for a click on any launcher.
 export function onMissionButton(handler) {
-  if (!els.missionBtn || !handler) return;
-  els.missionBtn.addEventListener('click', (e) => {
+  if (!handler) return;
+  for (const btn of els.missionBtns ?? []) {
+    btn.addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      handler(btn.dataset.mission);
+    });
+  }
+}
+
+// The live objective under the launchers. `m` is a mission's hud() — { title,
+// objective, count, seconds?, gauge?: { label, value 0..1, low } } — or null.
+const missionShown = {};
+function setMissionField(key, el, text) {
+  if (missionShown[key] === text) return;
+  missionShown[key] = text;
+  if (el) el.textContent = text;
+}
+export function updateMissionPanel(m) {
+  const panel = els.missionPanel;
+  if (!panel) return;
+  if (panel.hidden !== !m) panel.hidden = !m;
+  if (!m) return;
+  setMissionField('title', els.missionTitle, m.title);
+  setMissionField('count', els.missionCount, m.count);
+  setMissionField('objective', els.missionObjective, m.objective);
+  setMissionField('time', els.missionTime, m.seconds === undefined ? '' : formatClock(m.seconds));
+  const gauge = els.missionGauge;
+  if (gauge) {
+    if (gauge.hidden !== !m.gauge) gauge.hidden = !m.gauge;
+    if (m.gauge) {
+      setMissionField('gaugeLabel', els.missionGaugeLabel, m.gauge.label);
+      const width = `${Math.round(m.gauge.value * 100)}%`;
+      if (missionShown.gauge !== width) {
+        missionShown.gauge = width;
+        els.missionGaugeFill.style.width = width;
+      }
+      if (missionShown.low !== m.gauge.low) {
+        missionShown.low = m.gauge.low;
+        gauge.toggleAttribute('data-low', m.gauge.low);
+      }
+    }
+  }
+}
+
+function formatClock(seconds) {
+  const m = Math.floor(seconds / 60);
+  return `${m}:${(seconds - m * 60).toFixed(1).padStart(4, '0')}`;
+}
+
+// The sound switch.
+export function setAudioButton(on) {
+  if (els.audioBtn) els.audioBtn.textContent = on ? 'SOUND ON' : 'SOUND OFF';
+}
+
+export function onAudioButton(handler) {
+  if (!els.audioBtn || !handler) return;
+  els.audioBtn.addEventListener('click', (e) => {
     e.currentTarget.blur();
     handler();
   });
@@ -224,6 +294,23 @@ export function updateSpeedFx(ratio) {
   }
 }
 
+// A curved gauge: `value` 0..1 of the arc, redrawn only when it moves a step.
+const ARC_SPEED_FULL = 140; // m/s at the top of the speed arc (boosted cruise is 132)
+const ARC_ALT_FULL = 500; // m above ground at the top of the height arc
+function setArc(key, value, level) {
+  const el = els[key];
+  if (!el) return;
+  const dash = `${(Math.max(0, Math.min(1, value)) * 100).toFixed(1)} 100`;
+  if (shownText[key] !== dash) {
+    shownText[key] = dash;
+    el.style.strokeDasharray = dash;
+  }
+  if (shownText[`${key}Level`] !== level) {
+    shownText[`${key}Level`] = level;
+    el.dataset.level = level;
+  }
+}
+
 // state: { altitude, speed, pitch, roll, heading, mode, health }
 export function updateHUD(state) {
   setText('alt', state.altitude.toFixed(1));
@@ -234,11 +321,15 @@ export function updateHUD(state) {
   setText('mode', state.mode);
 
   setText('hp', String(Math.round(state.health)));
-  const hpWidth = `${Math.max(0, Math.min(100, state.health))}%`;
-  if (els.hpBar && shownText.hpBar !== hpWidth) {
-    shownText.hpBar = hpWidth;
-    els.hpBar.style.width = hpWidth;
+  const hp = Math.round(Math.max(0, Math.min(100, state.health)));
+  if (els.hpRing && shownText.hpRing !== hp) {
+    shownText.hpRing = hp;
+    els.hpRing.style.strokeDasharray = `${hp} 100`;
+    els.hpCore.dataset.level = hp <= 25 ? 'critical' : hp <= 55 ? 'warn' : 'ok';
   }
+
+  setArc('arcSpd', state.speed / ARC_SPEED_FULL, state.speed > 70 ? 'hot' : 'ok');
+  setArc('arcAlt', state.altitude / ARC_ALT_FULL, state.altitude < 45 ? 'low' : 'ok');
 }
 
 // SpacetimeDB link status shown in the HUD (e.g. "ONLINE", "OFFLINE").
@@ -246,8 +337,16 @@ export function setNet(text) {
   if (els.net) els.net.textContent = text;
 }
 
-export function setJarvis(line) {
-  if (els.jarvis && line) els.jarvis.textContent = line;
+// JARVIS: the ticker shows the line; a listener (his voice) hears it too.
+let jarvisListener = null;
+export function onJarvisLine(listener) {
+  jarvisListener = listener;
+}
+
+export function setJarvis(line, options) {
+  if (!line) return;
+  if (els.jarvis) els.jarvis.textContent = line;
+  jarvisListener?.(line, options);
 }
 
 let gpwsShown = false;

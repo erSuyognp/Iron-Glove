@@ -1,6 +1,7 @@
 import { SITES } from '../sites.js';
 import { siteArt } from './art.js';
 import { startHeroSuit } from './hero.js';
+import { sfx } from '../audio/sound.js';
 
 const SUIT_GLB = '/iron_man_ucm.glb'; // the suit the game flies (main.js)
 
@@ -101,6 +102,7 @@ export function pickSite(initialSite = SITES[0]) {
     });
 
     const tile = tiles[selectedIndex];
+    if (focus) sfx('select');
     if (scroll) tile?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
     if (focus) tile?.focus({ preventScroll: true });
   }
@@ -117,6 +119,7 @@ export function pickSite(initialSite = SITES[0]) {
     function launch() {
       if (launched) return;
       launched = true;
+      sfx('deploy');
       cleanUp();
       if (hud) {
         hud.inert = false;

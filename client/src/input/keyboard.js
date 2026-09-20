@@ -14,6 +14,7 @@ let fireQueued = false;
 const OWNED = new Set([
   'KeyW', 'KeyS', 'KeyA', 'KeyD',
   'KeyQ', 'KeyE', 'KeyR',
+  'KeyF', // water cannon (fire response mission)
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'Space', 'ShiftLeft', 'ShiftRight',
 ]);
