@@ -13,6 +13,11 @@
 // a deliberately generous estimate: main.js replaces it with a measured one
 // once the ground there has streamed in (settleSite), and too high is the safe
 // way to be wrong until then.
+//
+// `radius` (m) is how far a site's missions and drones range from the landmark.
+// It is not a fence: there is no flight perimeter, and the pilot may fly as far
+// from the site as they like. Homewood has none; its missions use a default and
+// the server keeps its drones over the campus.
 // ---------------------------------------------------------------------------
 
 const M_PER_LAT = 111320;
@@ -35,7 +40,7 @@ export const SITES = [
     spoken: ['Hopkins', 'Baltimore', 'campus'], // what a pilot might call it out loud (jarvis/assistant.js)
     place: 'Baltimore, Maryland · USA',
     era: 'EST. 1876',
-    blurb: 'Home airspace. Keyser Quad, Gilman Hall and the full Homewood campus perimeter.',
+    blurb: 'Home airspace. Keyser Quad, Gilman Hall and the whole of the Homewood campus.',
     longitude: -76.6205,
     latitude: 39.3299,
     altitude: HOMEWOOD_ALTITUDE,
@@ -43,17 +48,6 @@ export const SITES = [
     approach: 0,
     measured: true, // hand-tuned: keep the arrival height as it is
     minAltBelow: HOMEWOOD_MIN_ALT_BELOW,
-    // The campus envelope, [longitude, latitude]; other sites fly inside a circle.
-    polygon: [
-      [-76.6282, 39.3338],
-      [-76.6229, 39.3367],
-      [-76.6174, 39.3362],
-      [-76.6148, 39.3328],
-      [-76.6158, 39.3268],
-      [-76.6191, 39.3249],
-      [-76.6254, 39.3255],
-      [-76.6284, 39.3292],
-    ],
   },
   {
     id: 'umd',
@@ -209,19 +203,4 @@ export function settleSite(groundHeight) {
   if (site.measured || !Number.isFinite(groundHeight)) return;
   site.measured = true;
   setAltitude(groundHeight + ARRIVAL_AGL);
-}
-
-/** The site's flight perimeter as [longitude, latitude] corners. */
-export function sitePerimeter(s = site) {
-  if (s.polygon) return s.polygon;
-  const corners = [];
-  const SIDES = 32;
-  for (let i = 0; i < SIDES; i++) {
-    const a = (i / SIDES) * 2 * Math.PI;
-    corners.push([
-      s.longitude + (Math.sin(a) * s.radius) / s.mPerLon,
-      s.latitude + (Math.cos(a) * s.radius) / s.mPerLat,
-    ]);
-  }
-  return corners;
 }

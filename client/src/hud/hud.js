@@ -1,5 +1,7 @@
 // HUD overlay — reads the DOM once, then updates cheap text nodes each frame.
 
+import { shownLine, spokenLine } from '../jarvis/line.js';
+
 const els = {};
 
 // What each element currently shows. Writing a text node or a style dirties
@@ -400,10 +402,11 @@ export function onJarvisLine(listener) {
   jarvisListener = listener;
 }
 
+// A figure in {braces} is shown and never spoken (jarvis/line.js).
 export function setJarvis(line, options) {
   if (!line) return;
-  if (els.jarvis) els.jarvis.textContent = line;
-  jarvisListener?.(line, options);
+  if (els.jarvis) els.jarvis.textContent = shownLine(line);
+  jarvisListener?.(spokenLine(line), options);
 }
 
 let gpwsShown = false;

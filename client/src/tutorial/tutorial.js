@@ -1,4 +1,16 @@
-import { isGloveConnected, hasWebSerial, readGlove, readGloveAxes, setGloveHandler } from '../input/glove.js';
+import {
+  isGloveConnected,
+  hasWebSerial,
+  readGlove,
+  readGloveAxes,
+  setGloveHandler,
+  ROLL_CLIMB,
+  ROLL_DOWN,
+  ROLL_FWD,
+  ROLL_LOBE,
+  FIST_G,
+  FIRE_G,
+} from '../input/glove.js';
 import { readAxes, isDown } from '../input/keyboard.js';
 import { sfx } from '../audio/sound.js';
 
@@ -27,9 +39,18 @@ const DONE_PAUSE_MS = 1100; // the beat between the tick and the next step
 const DEMO_PERIOD_S = 3.4; // one demo loop: ease in, hold, ease out, rest
 const FOLLOW = 0.3; // how fast the picture chases a live reading (per frame at 60 fps)
 
-// Where the glove's roll lobes sit and what trips its gestures. Kept in step
-// with input/glove.js, which keeps these to itself.
-const GLOVE = { climb: 160, dive: 0, thrust: -120, hover: 80, zoneHalf: 40, punchG: 1.5, flickG: 2.5 };
+// Where the glove's roll lobes sit and what trips its gestures (input/glove.js).
+// A zone is drawn over the half of its lobe that pulls hardest; HOVER is the
+// one roll no lobe reaches, midway between dive and climb.
+const GLOVE = {
+  climb: ROLL_CLIMB,
+  dive: ROLL_DOWN,
+  thrust: ROLL_FWD,
+  hover: (ROLL_CLIMB + ROLL_DOWN) / 2,
+  zoneHalf: ROLL_LOBE / 2,
+  punchG: FIST_G,
+  flickG: FIRE_G,
+};
 const G_SCALE = 4; // g at the far end of the punch / flick bars
 // The phone's tilt feel, in degrees. Kept in step with phone-controller/index.html.
 const PHONE = { deadzone: 5, full: 28, diveFull: 52 };
@@ -453,9 +474,10 @@ export function createTutorial({ say, povName, watchedPilot, phonePilots }) {
   function readInput(id) {
     if (id === 'glove') {
       if (watchedPilot() || !isGloveConnected()) return null;
-      const sample = readGlove();
-      const axes = readGloveAxes(sample);
-      notePeak(sample);
+      // The steadied axes and angles the suit is actually flying on; only the
+      // gestures come off the raw samples.
+      const axes = readGloveAxes();
+      notePeak(readGlove());
       const gesture = { ...peak };
       peak.punch = peak.flick = 0;
       return {
@@ -464,8 +486,8 @@ export function createTutorial({ say, povName, watchedPilot, phonePilots }) {
         climb: axes.climb,
         dive: axes.dive,
         boost: readAxes().boost,
-        roll: sample.roll,
-        pitch: sample.pitch,
+        roll: axes.roll,
+        pitch: axes.pitch,
         punch: gesture.punch,
         flick: gesture.flick,
       };

@@ -16,6 +16,24 @@ import path from 'node:path';
 // ELEVENLABS_API_KEY in client/.env. It has no VITE_ prefix on purpose: Vite
 // never puts it in the browser bundle. With no key the requests fall through
 // and the game uses its built-in synth and the browser's own voice.
+//
+// Every request to ElevenLabs costs credits, so:
+//   - A saved line is never bought twice. The folder's stamp (public/voice/
+//     .voice) records whose voice the lines are in, the ELEVENLABS_VOICE it was
+//     looked up for and the model chosen for it, so a restart asks ElevenLabs
+//     nothing; and a lookup
+//     that merely fails (offline, rate limited, a key without voice access)
+//     keeps that voice instead of switching to the fallback one, which would
+//     throw every saved line away.
+//   - One request at a time. A page load asks for nine effects and a line at
+//     once, and a plan's concurrency limit turns that into failures that come
+//     back on every reload. After a failure nothing new is bought for a while.
+//   - A line that cannot be bought right now is answered 204: the game shows
+//     it in the ticker and stays quiet, rather than change voices for it.
+//   - ELEVENLABS_RECORD=off plays what is saved and buys nothing at all.
+//   - Every purchase is logged with a running count.
+// public/voice/index.json lists the lines on file, so the game can tell which
+// takes of a line already have a recording (src/audio/voice.js).
 // ---------------------------------------------------------------------------
 
 // Who speaks. ELEVENLABS_VOICE is a voice's name (looked up in the account's
@@ -26,6 +44,23 @@ const DEFAULT_VOICE = 'Tony';
 const FALLBACK_VOICE_ID = 'onwK4e9ZLuTAKqWW03F9'; // "Daniel"
 const VOICE_ID_PATTERN = /^[A-Za-z0-9]{20}$/;
 const MAX_LINE_LENGTH = 220;
+
+// Which model speaks, and how. A line is bought once and kept, so how long a
+// request takes hardly matters and how well the voice survives the model does:
+// on the low-latency flash model a cloned voice rushed every line and, one line
+// in three, dropped words or left seconds of dead air in the middle of it. A
+// voice lists the models it is rated for (high_quality_base_model_ids): the
+// first of these it lists is used, or ELEVENLABS_MODEL if that is set. Turbo
+// v2.5 costs the same per character as flash v2.5; multilingual v2 is the
+// steadiest of all and costs twice that.
+const MODEL_PREFERENCE = ['eleven_turbo_v2_5', 'eleven_multilingual_v2', 'eleven_flash_v2_5', 'eleven_turbo_v2', 'eleven_flash_v2'];
+// These guess the language from the text unless told, and a three-word line
+// ("Fox three.") is easy to guess wrong.
+const TAKES_LANGUAGE = ['eleven_turbo_v2_5', 'eleven_flash_v2_5'];
+// Steady and unhurried: JARVIS is calm, and a line is only heard over the jets.
+const VOICE_SETTINGS = { stability: 0.75, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 };
+const PAUSE_AFTER_FAILURE_MS = 60 * 1000; // after a failed request, nothing new is bought for this long
+const RETRY_FAILED_MS = 5 * 60 * 1000; // and the file that failed is left alone for this long
 
 // name -> [prompt, seconds]. Names match RECORDED in src/audio/sound.js.
 const SFX_PROMPTS = {
@@ -53,8 +88,18 @@ function lineHash(text) {
 function elevenLabsAudio(env) {
   const key = env.ELEVENLABS_API_KEY;
   const wanted = (env.ELEVENLABS_VOICE || env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE).trim();
+  const wantedModel = (env.ELEVENLABS_MODEL || '').trim();
+  // ELEVENLABS_RECORD=off: play what is saved, buy nothing new.
+  const recording = !/^(off|0|false|no)$/i.test((env.ELEVENLABS_RECORD || '').trim());
   const publicDir = path.resolve(process.cwd(), 'public');
+  const voiceDir = path.join(publicDir, 'voice');
+  const stampFile = path.join(voiceDir, '.voice');
   const pending = new Map(); // file -> Promise, so one file is only generated once
+  const failedAt = new Map(); // file -> when buying it last failed
+  let pausedUntil = 0; // nothing new is bought before this (a request has just failed)
+  let keyRejected = false; // ElevenLabs refused the key: carry on as if there were none
+  let queue = Promise.resolve(); // the requests to ElevenLabs, one after another
+  let bought = 0; // purchases since the server started
   let voice = null; // Promise<voice id>, resolved on the first line spoken
   let voiceSettled = false; // the saved lines are known to be in that voice
 
@@ -64,20 +109,59 @@ function elevenLabsAudio(env) {
     return res.json();
   }
 
-  // Turn ELEVENLABS_VOICE into a voice id: an id is used as it is; a name is
-  // matched against the account's voices (exact name first, then "contains").
+  // The stamp, a line each: the voice id the saved lines are in, the
+  // ELEVENLABS_VOICE name that id was looked up for (empty if it never was), and
+  // the model chosen for that voice. With all three a restart asks nothing.
+  function readStamp() {
+    if (!fs.existsSync(stampFile)) return null;
+    const [id, name = '', model = ''] = fs.readFileSync(stampFile, 'utf8').split('\n').map((s) => s.trim());
+    return VOICE_ID_PATTERN.test(id) ? { id, name, model } : null;
+  }
+
+  // The model for a voice rated for `rated` (ids, best guess first when empty).
+  function chooseModel(rated = []) {
+    if (wantedModel) return wantedModel;
+    return MODEL_PREFERENCE.find((m) => rated.includes(m)) ?? MODEL_PREFERENCE[0];
+  }
+
+  // The lines on file, for the game (src/audio/voice.js). Ships with the build.
+  function writeIndex() {
+    if (!fs.existsSync(voiceDir)) return;
+    const hashes = fs.readdirSync(voiceDir).filter((f) => f.endsWith('.mp3')).map((f) => f.slice(0, -4)).sort();
+    const file = path.join(voiceDir, 'index.json');
+    const json = JSON.stringify(hashes);
+    if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== json) fs.writeFileSync(file, json);
+    return hashes.length;
+  }
+
+  // Turn ELEVENLABS_VOICE into a voice and the model to speak it with: an id is
+  // used as it is; a name is matched against the account's voices (exact name
+  // first, then "contains"). `name` is set when the id came from looking that
+  // name up. Looking a voice up costs no credits, and the stamp spares the next
+  // start even that.
   async function findVoice() {
-    if (VOICE_ID_PATTERN.test(wanted)) return wanted;
+    const stamp = readStamp();
+    const byId = VOICE_ID_PATTERN.test(wanted);
+    const known = stamp && (byId ? stamp.id === wanted : stamp.name === wanted);
+    // Looked up before: nothing to ask. (ELEVENLABS_MODEL needs no rating either.)
+    if (known && (stamp.model || wantedModel)) return { ...stamp, model: wantedModel || stamp.model };
     const name = wanted.toLowerCase();
     try {
+      if (byId) {
+        const voice = await get(`https://api.elevenlabs.io/v1/voices/${wanted}`);
+        const model = chooseModel(voice.high_quality_base_model_ids);
+        console.log(`[audio] JARVIS speaks with "${voice.name}" (${wanted}) on ${model}`);
+        return { id: wanted, name: '', model };
+      }
       const { voices = [] } = await get(`https://api.elevenlabs.io/v2/voices?page_size=100&search=${encodeURIComponent(wanted)}`);
       const match =
         voices.find((v) => v.name.toLowerCase() === name) ||
         voices.find((v) => v.name.toLowerCase().split(/[\s\-–—]+/).includes(name)) ||
         voices.find((v) => v.name.toLowerCase().includes(name));
       if (match) {
-        console.log(`[audio] JARVIS speaks with "${match.name}" (${match.voice_id})`);
-        return match.voice_id;
+        const model = chooseModel(match.high_quality_base_model_ids);
+        console.log(`[audio] JARVIS speaks with "${match.name}" (${match.voice_id}) on ${model}`);
+        return { id: match.voice_id, name: wanted, model };
       }
       // Not in the account. Say what the Voice Library has under that name.
       const { voices: shared = [] } = await get(`https://api.elevenlabs.io/v1/shared-voices?page_size=5&search=${encodeURIComponent(wanted)}`).catch(() => ({}));
@@ -87,33 +171,52 @@ function elevenLabsAudio(env) {
         for (const v of shared) console.warn(`[audio]   ${v.name}  ${v.voice_id}`);
       }
     } catch (err) {
+      // Could not ask. That is no reason to change voices: it would throw away
+      // every saved line, and again when the next lookup succeeds. The name and
+      // model stay unvouched for, so the next start asks again.
+      if (byId || stamp) {
+        const id = byId ? wanted : stamp.id;
+        console.warn(`[audio] voice lookup failed (${err.message}); staying with ${id}.`);
+        return { id, name: '', model: '', speakWith: chooseModel() };
+      }
       console.warn(`[audio] voice lookup failed (${err.message}); using the fallback voice.`);
     }
-    return FALLBACK_VOICE_ID;
+    return { id: FALLBACK_VOICE_ID, name: '', model: '', speakWith: chooseModel() }; // a premade voice: good on any model
   }
 
   // Saved lines belong to the voice that spoke them: on a change of voice the
-  // old ones are cleared, or JARVIS would switch voices mid-flight.
-  function claimVoiceFolder(voiceId) {
-    const dir = path.join(publicDir, 'voice');
-    const stamp = path.join(dir, '.voice');
-    fs.mkdirSync(dir, { recursive: true });
-    const previous = fs.existsSync(stamp) ? fs.readFileSync(stamp, 'utf8').trim() : null;
-    if (previous === voiceId) return;
-    if (previous) {
-      for (const f of fs.readdirSync(dir)) if (f.endsWith('.mp3')) fs.unlinkSync(path.join(dir, f));
-      console.log('[audio] voice changed: cleared the saved JARVIS lines');
+  // old ones are cleared, or JARVIS would switch voices mid-flight. (A change
+  // of model leaves them be: delete public/voice/*.mp3 to have them re-recorded.)
+  function claimVoiceFolder({ id, name, model }) {
+    fs.mkdirSync(voiceDir, { recursive: true });
+    const previous = readStamp();
+    if (previous && previous.id !== id) {
+      const old = fs.readdirSync(voiceDir).filter((f) => f.endsWith('.mp3'));
+      for (const f of old) fs.unlinkSync(path.join(voiceDir, f));
+      console.log(`[audio] voice changed (${previous.id} -> ${id}): cleared ${old.length} saved JARVIS lines`);
     }
-    fs.writeFileSync(stamp, voiceId);
+    if (!previous || previous.id !== id || previous.name !== name || previous.model !== model) {
+      fs.writeFileSync(stampFile, name || model ? `${id}\n${name}\n${model}\n` : id);
+    }
+    writeIndex();
   }
 
+  // -> { id, model }: who speaks, and on which model.
   function voiceId() {
-    voice ??= findVoice().then((id) => {
-      claimVoiceFolder(id);
+    voice ??= findVoice().then((found) => {
+      claimVoiceFolder(found);
       voiceSettled = true;
-      return id;
+      return { id: found.id, model: found.model || found.speakWith };
     });
     return voice;
+  }
+
+  // The voice the stamp vouches for is gone from the account: look it up afresh.
+  function forgetVoice() {
+    const stamp = readStamp();
+    if (stamp?.name || stamp?.model) fs.writeFileSync(stampFile, stamp.id);
+    voice = null;
+    voiceSettled = false;
   }
 
   async function request(url, body) {
@@ -126,12 +229,20 @@ function elevenLabsAudio(env) {
     return Buffer.from(await res.arrayBuffer());
   }
 
-  const speech = async (text) =>
-    request(`https://api.elevenlabs.io/v1/text-to-speech/${await voiceId()}?output_format=mp3_44100_128`, {
-      text,
-      model_id: 'eleven_flash_v2_5',
-      voice_settings: { stability: 0.6, similarity_boost: 0.8, speed: 1.05 },
-    });
+  const speech = async (text) => {
+    try {
+      const { id, model } = await voiceId();
+      return await request(`https://api.elevenlabs.io/v1/text-to-speech/${id}?output_format=mp3_44100_128`, {
+        text,
+        model_id: model,
+        ...(TAKES_LANGUAGE.includes(model) ? { language_code: 'en' } : {}),
+        voice_settings: VOICE_SETTINGS,
+      });
+    } catch (err) {
+      if (/voice_not_found/i.test(err.message)) forgetVoice();
+      throw err;
+    }
+  };
 
   const effect = ([prompt, seconds]) =>
     request('https://api.elevenlabs.io/v1/sound-generation', {
@@ -140,15 +251,31 @@ function elevenLabsAudio(env) {
       prompt_influence: 0.45,
     });
 
+  // Run `make` once everything asked for before it has finished.
+  function inTurn(make) {
+    const run = queue.then(make, make);
+    queue = run.catch(() => {});
+    return run;
+  }
+
+  // Why a missing file will not be bought right now, or null if it will be.
+  function declined(file) {
+    if (!recording) return 'recording is off';
+    if (Date.now() < pausedUntil) return 'paused after a failed request';
+    if (Date.now() - (failedAt.get(file) ?? -Infinity) < RETRY_FAILED_MS) return 'it failed a moment ago';
+    return null;
+  }
+
   function middleware(req, res, next) {
     const url = new URL(req.url, 'http://localhost');
     const match = /^\/(voice|sfx)\/([\w-]+)\.mp3$/.exec(url.pathname);
-    if (!match || !key) return next();
+    if (!match || !key || keyRejected) return next();
     const [, kind, name] = match;
     const file = path.join(publicDir, kind, `${name}.mp3`);
-    if (kind === 'voice' && !voiceSettled) {
+    if (kind === 'voice' && !voiceSettled && recording) {
       // First line since the server started: settle whose voice the saved
-      // lines are in before serving (or clearing) any of them.
+      // lines are in before serving (or clearing) any of them. (With recording
+      // off nothing is asked of ElevenLabs, not even that.)
       voiceId()
         .catch(() => {})
         .finally(() => {
@@ -161,27 +288,58 @@ function elevenLabsAudio(env) {
 
     let make;
     let keep = true;
+    let what;
     if (kind === 'sfx') {
       if (!SFX_PROMPTS[name]) return next();
       make = () => effect(SFX_PROMPTS[name]);
+      what = `effect "${name}"`;
     } else {
       const text = (url.searchParams.get('text') || '').trim();
       // The hash check means this can only ever write the file for that text.
       if (!text || text.length > MAX_LINE_LENGTH || lineHash(text) !== name) return next();
       make = () => speech(text);
       keep = url.searchParams.get('keep') !== '0';
+      what = `line "${text}"${keep ? '' : ' (one-off, not saved)'}`;
     }
+
+    // Not bought: an effect falls back to the synth; a line is answered 204, so
+    // the game shows it and stays quiet rather than change voices for it.
+    const pass = () => {
+      if (kind === 'sfx') return next();
+      res.statusCode = 204;
+      res.end();
+    };
+    if (!pending.has(file) && declined(file)) return pass();
 
     if (!pending.has(file)) {
       pending.set(
         file,
-        make()
-          .then((audio) => {
-            if (keep) {
-              fs.mkdirSync(path.dirname(file), { recursive: true });
-              fs.writeFileSync(file, audio);
+        inTurn(async () => {
+          // Something ahead of it in the queue may have just failed.
+          const reason = declined(file);
+          if (reason) throw Object.assign(new Error(reason), { declined: true });
+          const audio = await make();
+          if (keep) {
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, audio);
+            if (kind === 'voice') writeIndex();
+          }
+          console.log(`[audio] bought #${++bought}: ${what}`);
+          return audio;
+        })
+          .catch((err) => {
+            if (!err.declined) {
+              failedAt.set(file, Date.now());
+              pausedUntil = Date.now() + PAUSE_AFTER_FAILURE_MS;
+              keyRejected ||= /invalid_api_key/i.test(err.message);
+              console.warn(`[audio] ${kind}/${name}: ${err.message}`);
+              console.warn(
+                keyRejected
+                  ? '[audio] ElevenLabs refused the key: using the built-in synth and browser voice'
+                  : `[audio] buying nothing new for ${PAUSE_AFTER_FAILURE_MS / 1000} s`,
+              );
             }
-            return audio;
+            throw err;
           })
           .finally(() => pending.delete(file)),
       );
@@ -193,17 +351,16 @@ function elevenLabsAudio(env) {
         res.setHeader('cache-control', 'no-cache');
         res.end(audio);
       })
-      .catch((err) => {
-        console.warn(`[audio] ${kind}/${name}: ${err.message}`);
-        res.statusCode = 502;
-        res.end();
-      });
+      .catch(() => (keyRejected ? next() : pass()));
   }
 
   return {
     name: 'iron-glove-elevenlabs-audio',
     configureServer(server) {
+      const onFile = writeIndex() ?? 0; // also without a key: the saved lines still play
       if (!key) console.log('[audio] ELEVENLABS_API_KEY not set: using the built-in synth and browser voice');
+      else if (!recording) console.log(`[audio] ELEVENLABS_RECORD is off: playing the ${onFile} saved JARVIS lines, buying nothing`);
+      else console.log(`[audio] ${onFile} JARVIS lines on file; a new one is bought the first time it is spoken (ELEVENLABS_RECORD=off stops that)`);
       server.middlewares.use(middleware);
     },
   };

@@ -88,7 +88,8 @@ function answerLocally(text, context) {
   const site = /\b(take me|go|fly|travel|head|location|destination)\b/.test(words) ? findSite(words) : null;
   if (site) return { reply: `Setting course for ${site.name}.`, action: 'change_site', site: site.id };
   if (/\b(status|report|how am i|how are we|integrity|health|damage)\b/.test(words)) {
-    return { reply: statusLine(context), action: 'none' };
+    // All figures, so never the same twice: spoken, but not worth a saved recording.
+    return { reply: statusLine(context), action: 'none', oneOff: true };
   }
   if (/\bwhere\b/.test(words)) return { reply: `Over ${context.site}.`, action: 'none' };
   for (const [pattern, action, reply] of RULES) {
@@ -118,5 +119,5 @@ export async function askJarvis(text, context) {
   remember('user', text);
   remember('model', answer.reply);
   // A model reply is a one-off: its audio is not worth keeping on disk.
-  return { ...answer, improvised: thought };
+  return { ...answer, improvised: thought || Boolean(answer.oneOff) };
 }

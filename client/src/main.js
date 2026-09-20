@@ -1,7 +1,6 @@
 import * as Cesium from 'cesium';
 import { initWorld, hasValidToken, getRenderQuality, setSunFor } from './cesium/world.js';
 import { updateChaseCamera } from './cesium/camera.js';
-import { initBoundary } from './cesium/boundary.js';
 import { site, chooseSite, settleSite, findSite } from './sites.js';
 import { pickSite } from './landing/landing.js';
 import { loadSite } from './landing/loading.js';
@@ -49,7 +48,8 @@ import {
   showMissionResult,
 } from './hud/hud.js';
 import { initAudio, sfx, duck, updateFlightAudio, isMuted, setMuted } from './audio/sound.js';
-import { speak, hush } from './audio/voice.js';
+import { speak, hush, isRecorded } from './audio/voice.js';
+import { spokenLine } from './jarvis/line.js';
 import { createListener } from './jarvis/listen.js';
 import { askJarvis } from './jarvis/assistant.js';
 import { createMissions, formatTime } from './missions/missions.js';
@@ -58,6 +58,7 @@ import { AI_FEATURES } from './ai/config.js';
 import { createSentinelController } from './ai/sentinelController.js';
 import { initAttitude, updateAttitude } from './hud/attitude.js';
 import { createTracker } from './hud/tracker.js';
+import { createDronePointers } from './hud/dronePointers.js';
 import { sampleSurfaceHeight, forwardObstacle } from './suit/collision.js';
 import { initTrail } from './suit/thruster.js';
 import { initSuitOverlay } from './suit/player.js';
@@ -199,7 +200,6 @@ const MIN_CLOSING_SPEED = 10; // m/s, so a parked suit still re-samples
 const BUMP_MIN_SPEED = 6; // m/s: slower than this a wall never bounces the suit
 
 const REPULSOR_LIFE = 0.35; // seconds the blast ellipsoid lasts
-const BOUNDARY_WARN_COOLDOWN_MS = 2400;
 
 const REPULSOR_LINES = [
   'Repulsor blast away.',
@@ -248,9 +248,11 @@ const ARRIVAL_TIMEOUT_MS = 12000;
 // What JARVIS says. Every entry has several takes and `pick` never gives the
 // same one twice running, so a long flight doesn't sound like a loop. Entries
 // read like plain strings (getters) or take arguments; the three arrays are
-// picked from where they are used. Each distinct sentence is recorded once by
-// the voice (audio/voice.js), so takes built around a number keep the number
-// at the end of a fixed phrase rather than scattering it.
+// picked from where they are used. Each distinct sentence he speaks is a
+// recording bought once (audio/voice.js), so a figure that changes from run to
+// run (a time, an exact percentage) goes in {braces}: shown in the ticker,
+// never spoken (jarvis/line.js). Small, bounded numbers ("3 still burning")
+// are fine to say.
 const JARVIS_LINES = {
   online: () =>
     pick([
@@ -259,19 +261,6 @@ const JARVIS_LINES = {
       `Flight systems green. ${site.name} is all yours.`,
       `We have arrived. ${site.name}, and not a cloud to blame anything on.`,
     ]),
-  perimeter: () =>
-    site.polygon
-      ? pick([
-          'Homewood perimeter engaged. Keeping you inside campus airspace.',
-          'That is the edge of campus. Turning you back.',
-          'Campus boundary. The rest of Baltimore will have to wait.',
-        ])
-      : pick([
-          `Flight perimeter engaged. Keeping you over ${site.name}.`,
-          `That is the edge of our airspace. Bringing you back toward ${site.name}.`,
-          'Perimeter reached. I would rather we stayed where I can see the ground.',
-          'Airspace boundary. Turning you around.',
-        ]),
   get missionOn() {
     return pick([
       'Mission active. Four hostile drones inbound — two will shoot back.',
@@ -327,9 +316,9 @@ const JARVIS_LINES = {
         : 'Fire out.',
   fireDone: (time) =>
     pick([
-      `All fires extinguished in ${time}. The city thanks you.`,
-      `Every fire is out. Total time: ${time}.`,
-      `That is the last of them. The fire department sends its regards. Time: ${time}.`,
+      `All fires extinguished{ in ${time}}. The city thanks you.`,
+      `Every fire is out.{ Total time: ${time}.}`,
+      `That is the last of them. The fire department sends its regards.{ Time: ${time}.}`,
     ]),
   get tankEmpty() {
     return pick([
@@ -362,14 +351,14 @@ const JARVIS_LINES = {
   runDone: (time, record) =>
     record
       ? pick([
-          `Course complete in ${time}. A new record.`,
-          `A new best. Course time: ${time}.`,
-          `That is the record. Do try to look surprised. Course time: ${time}.`,
+          `Course complete{ in ${time}}. A new record.`,
+          `A new best.{ Course time: ${time}.}`,
+          `That is the record. Do try to look surprised.{ Course time: ${time}.}`,
         ])
       : pick([
-          `Course complete in ${time}.`,
-          `Across the line. Course time: ${time}.`,
-          `Not your best, but tidy. Course time: ${time}.`,
+          `Course complete{ in ${time}}.`,
+          `Across the line.{ Course time: ${time}.}`,
+          `Not your best, but tidy.{ Course time: ${time}.}`,
         ]),
   get missionNoLink() {
     return pick([
@@ -443,12 +432,13 @@ const JARVIS_LINES = {
       'Inbound. Now would be a good time to turn.',
     ]);
   },
-  struck: (hp) =>
-    pick([
-      `Direct hit. Suit integrity at ${Math.round(hp)} percent.`,
-      `We have been hit. Suit integrity at ${Math.round(hp)} percent.`,
-      `That one landed. Suit integrity at ${Math.round(hp)} percent.`,
-    ]),
+  // A missile takes 6%, so the exact figure would be sixteen recordings of each
+  // take. It stays in the ticker; the voice says only how bad things are.
+  struck: (hp) => {
+    const figure = `{ Suit integrity at ${Math.round(hp)} percent.}`;
+    const state = hp <= 25 ? ' Integrity is critical.' : hp <= 50 ? ' We are below half.' : '';
+    return pick([`Direct hit.${figure}${state}`, `We have been hit.${figure}${state}`, `That one landed.${figure}${state}`]);
+  },
   get downed() {
     return pick([
       'Suit integrity lost. Rebooting at the arrival point.',
@@ -468,16 +458,25 @@ const DRONE_BUMP_COOLDOWN_MS = 2500;
 const GLOVE_SPRAY_MS = 1800; // how long one glove fist holds the water cannon open
 const INBOUND_COOLDOWN_MS = 6000;
 
-// A random take, but never the one this list gave last time.
-const lastPick = new Map(); // first entry of a list -> the last one picked from it
+// A random take, but never the one this list gave last time. Each take he
+// speaks is a recording to buy, so once a list has VOICED_TAKES of them on file
+// it keeps to those: three keep a long flight from sounding like a loop, and
+// the rest of an eight-take list is not bought for the sake of it. Raise it to
+// have every take recorded.
+const VOICED_TAKES = 3;
+const lastPick = new Map(); // a list (by its first take, as spoken) -> the last take picked from it
 function pick(arr) {
   if (arr.length < 2) return arr[0];
-  const previous = lastPick.get(arr[0]);
+  const voiced = arr.filter((take) => isRecorded(spokenLine(take)));
+  const takes = voiced.length >= Math.min(VOICED_TAKES, arr.length) ? voiced : arr;
+  if (takes.length < 2) return takes[0];
+  const list = spokenLine(arr[0]);
+  const previous = lastPick.get(list);
   let choice;
   do {
-    choice = arr[Math.floor(Math.random() * arr.length)];
-  } while (choice === previous);
-  lastPick.set(arr[0], choice);
+    choice = takes[Math.floor(Math.random() * takes.length)];
+  } while (spokenLine(choice) === previous);
+  lastPick.set(list, spokenLine(choice));
   return choice;
 }
 
@@ -533,8 +532,6 @@ let trailClearNeeded = false; // flush the afterburner trail after a teleport
 let idle = false; // suit is still enough to levitate
 let hoverBlend = 0; // 0..1 ease for the idle hover
 let hoverClock = 0; // seconds, advances the hover sine
-let boundary = null; // the site's flight perimeter
-let boundaryWarnUntil = 0;
 let lockState = 'CLEAR'; // autolock state from the previous frame
 let droneBumpUntil = 0;
 let inboundWarnUntil = 0;
@@ -599,9 +596,10 @@ function leanTarget(s) {
 
 // One step of the suit flight model, shared by our suit and by the phone
 // pilots we fly from their control inputs. `input`: throttle, yaw, climb in
-// -1..1, an optional dive in 0..1, plus a boost flag. Returns true when the
-// site's perimeter stopped the suit this step.
-function flySuit(s, input, dt) {
+// -1..1, an optional dive in 0..1, plus a boost flag. `sensors` are the suit's
+// collision sensors (sensorState). There is no flight perimeter: a site is
+// where the pilot arrives, and they may fly as far from it as they like.
+function flySuit(s, input, dt, sensors) {
   const dive = Math.max(0, Math.min(1, input.dive || 0));
   s.dive = smooth(s.dive, dive, ANGLE_LERP, dt);
 
@@ -624,14 +622,18 @@ function flySuit(s, input, dt) {
   // along a real flight path rather than a key state.
   s.vspeed = smooth(s.vspeed, input.climb * CLIMB_RATE - dive * DIVE_RATE, SPEED_LERP, dt);
   s.altitude += s.vspeed * dt;
-  if (s.altitude < site.minAlt || s.altitude > site.maxAlt) {
-    s.altitude = Math.min(site.maxAlt, Math.max(site.minAlt, s.altitude));
+  // The site's floor is a height around its own arrival point, there to catch a
+  // suit over ground that hasn't streamed in. Away from the site the land can
+  // lie below it (downtown Baltimore is some 50 m under Homewood's), so it only
+  // applies until the ground under the suit has been measured; from then on
+  // that ground is the floor (collide).
+  const minAlt = sensors?.surface === undefined ? site.minAlt : -Infinity;
+  if (s.altitude < minAlt || s.altitude > site.maxAlt) {
+    s.altitude = Math.min(site.maxAlt, Math.max(minAlt, s.altitude));
     s.vspeed = 0;
   }
 
   // Advance position along heading over the ground.
-  const previousLongitude = s.longitude;
-  const previousLatitude = s.latitude;
   const dist = s.speed * dt; // meters this frame
   const headingRad = Cesium.Math.toRadians(s.heading);
   const dNorth = Math.cos(headingRad) * dist;
@@ -639,25 +641,6 @@ function flySuit(s, input, dt) {
   const latRad = Cesium.Math.toRadians(s.latitude);
   s.latitude += dNorth / 111320;
   s.longitude += dEast / (111320 * Math.cos(latRad));
-
-  // The site is the complete playable world: the holographic perimeter is
-  // visible at its edge, and this constraint makes it a real flight barrier
-  // at every altitude instead of just decorative geometry.
-  if (boundary) {
-    const confined = boundary.confine(
-      previousLongitude,
-      previousLatitude,
-      s.longitude,
-      s.latitude,
-    );
-    if (confined.blocked) {
-      s.longitude = confined.longitude;
-      s.latitude = confined.latitude;
-      s.speed *= 0.18;
-      return true;
-    }
-  }
-  return false;
 }
 
 // Coordinated-turn bank for a yaw command (mesh only, so the camera isn't
@@ -691,11 +674,7 @@ function stepFlight(dt) {
   const rollInput = gloveOn ? 0 : keys.roll;
   suit.mode = gloveOn ? 'GLOVE' : 'KEYBOARD';
 
-  if (flySuit(suit, input, dt) && performance.now() >= boundaryWarnUntil) {
-    boundaryWarnUntil = performance.now() + BOUNDARY_WARN_COOLDOWN_MS;
-    sfx('warn');
-    setJarvis(JARVIS_LINES.perimeter());
-  }
+  flySuit(suit, input, dt, localSensors);
 
   let bankTarget = 0;
   if (gloveOn) {
@@ -872,7 +851,7 @@ function thrustDrivers(s) {
 //   'sim'   — a phone in CONTROL_MODE sends only its control inputs, and we
 //             fly its suit here with the same flight model as ours. Motion is
 //             smooth however sparse the updates are, and the judge obeys the
-//             campus perimeter and building collisions.
+//             same building and ground collisions.
 //   'track' — anything streaming its own positions (e.g. another laptop):
 //             we dead-reckon between its updates and read the flight state the
 //             rig needs back off the drawn track.
@@ -1006,26 +985,22 @@ function removePilot(viewer, pilot) {
   pilots.delete(pilot.id);
 }
 
-// Where a phone pilot appears: beside us, facing our way, so both suits are in
-// shot. Falls back to our other side, then our own spot, near the perimeter.
+// Where a phone pilot appears: on our right, facing our way, so both suits are
+// in shot.
 function wingmanSpawn() {
   const headingRad = Cesium.Math.toRadians(suit.heading);
   const metresPerLon = 111320 * Math.cos(Cesium.Math.toRadians(suit.latitude));
-  for (const side of [1, -1, 0]) {
-    const right = WINGMAN_OFFSET * side; // right of our heading: (east, north) = (cos h, -sin h)
-    const longitude = suit.longitude + (Math.cos(headingRad) * right) / metresPerLon;
-    const latitude = suit.latitude - (Math.sin(headingRad) * right) / 111320;
-    if (side === 0 || !boundary || boundary.contains(longitude, latitude)) {
-      return flightState({ longitude, latitude, altitude: suit.altitude, heading: suit.heading });
-    }
-  }
+  // Right of our heading: (east, north) = (cos h, -sin h).
+  const longitude = suit.longitude + (Math.cos(headingRad) * WINGMAN_OFFSET) / metresPerLon;
+  const latitude = suit.latitude - (Math.sin(headingRad) * WINGMAN_OFFSET) / 111320;
+  return flightState({ longitude, latitude, altitude: suit.altitude, heading: suit.heading });
 }
 
 // Fly a phone pilot's suit from its latest control inputs.
 function flyPilot(viewer, pilot, dt, now) {
   const s = pilot.state;
   const c = pilot.controls;
-  flySuit(s, c, dt);
+  flySuit(s, c, dt, pilot.sensors);
   s.pitch = smooth(s.pitch, c.climb * 18 - c.dive * DIVE_HUD_PITCH, ANGLE_LERP, dt);
   settleAttitude(s, coordinatedBank(s, c.yaw), dt);
   collide(viewer, s, pilot.sensors, now, REMOTE_SENSORS);
@@ -1201,7 +1176,7 @@ async function boot() {
   // Seed Cesium with the requested site (or JHU) before the pilot chooses.
   // That keeps the real canvas mounted and its world assets loading behind the
   // boot/destination overlays. The actual choice is applied again below,
-  // before a suit, boundary, or any game motion is created.
+  // before a suit or any game motion is created.
   const params = new URLSearchParams(window.location.search);
   const asked = findSite(params.get('site'));
   const provisional = asked ?? findSite('jhu');
@@ -1303,7 +1278,7 @@ async function boot() {
 
   // An unmeasured site holds the suit at its estimated arrival height while
   // the ground below streams in; once that is measured the pilot is put at the
-  // proper height and the perimeter and drones are set to match.
+  // proper height and the drones are set to match.
   let arriving = !site.measured;
   function arrive(heights = []) {
     if (!arriving) return;
@@ -1311,7 +1286,6 @@ async function boot() {
     settleSite(Math.max(...heights.filter(Number.isFinite), -Infinity));
     suit = spawnState();
     localSensors.surface = undefined;
-    boundary = initBoundary(viewer, site);
     setMissionButtons(null, true);
     hideBanner();
   }
@@ -1324,12 +1298,12 @@ async function boot() {
       .catch(() => arrive());
     setTimeout(arrive, ARRIVAL_TIMEOUT_MS);
   } else {
-    boundary = initBoundary(viewer, site);
     setMissionButtons(null, true);
   }
   const overlay = initSuitOverlay(viewer, '/iron_man_ucm.glb');
   const suit3d = overlay.createSuit({ name: PLAYER_ID });
   const tracker = createTracker(overlay);
+  const dronePointers = createDronePointers(overlay);
   const trail = initTrail(viewer);
   const trailOrigin = new Cesium.Cartesian3();
   updateChaseCamera(viewer, suit);
@@ -1402,6 +1376,7 @@ async function boot() {
     window.__pilots = pilots;
     window.__pilotRow = (row, live = true) => upsertPilot(row, live);
     window.__combat = combat;
+    window.__dronePointers = dronePointers;
     window.__missions = missions;
     window.__tutorial = tutorial;
     window.__suit = () => suit;
@@ -1727,6 +1702,8 @@ async function boot() {
       pilot.fireQueued = false;
     }
     const battle = combat.update({ dt, suits: flown });
+    // A small red arrow around the suit on camera for every drone in the air.
+    dronePointers.update(watched ? watched.view : view, combat.fleet.alive(), dt);
     tickSentinelHud(now, suit, combat.fleet);
     const mine = battle.pilots.get(PLAYER_ID);
     if (mine.lock !== lockState) {

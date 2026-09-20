@@ -4,12 +4,12 @@
 // All floats. No JSON.
 
 const BAUD = 115200;
-const FIST_G = 1.5; // abs(ax) above this (in g) is a fist clench
+export const FIST_G = 1.5; // abs(ax) above this (in g) is a fist clench
 const FIST_COOLDOWN_MS = 500;
 // Missile trigger: a sharp flick of the hand. The accelerometer magnitude
 // sqrt(ax² + ay² + az²) sits near 1 g at rest; it has to stay above FIRE_G for
 // longer than FIRE_HOLD_MS — a single noisy sample never fires.
-const FIRE_G = 2.5;
+export const FIRE_G = 2.5;
 const FIRE_HOLD_MS = 30;
 const FIRE_COOLDOWN_MS = 500;
 const SAMPLE_MS = 20; // firmware streams at 50 Hz
@@ -59,12 +59,32 @@ export function readGlove() {
 //   (-6, -120) forward speed
 //   pitch up   lean left
 //   pitch down lean right
-const ROLL_CLIMB = 160;
-const ROLL_DOWN = 0;
-const ROLL_FWD = -120;
-const ROLL_LOBE = 80; // deg — far enough that the three poses don't overlap
+export const ROLL_CLIMB = 160;
+export const ROLL_DOWN = 0;
+export const ROLL_FWD = -120;
+export const ROLL_LOBE = 80; // deg — far enough that the three poses don't overlap
 const PITCH_DEADZONE = 8; // keeps the (-6, -120) thrust pose from also turning
 const PITCH_YAW_SCALE = 45;
+
+// ---- Steadying the hand ----
+// The flight model never sees a raw sample. The firmware's angles carry hand
+// tremor and, through its accelerometer blend, every jolt of the arm, and at
+// 50 Hz all of it used to land on the suit (and on the camera, which rolls with
+// the glove). So the glove is treated the way the phone controller treats its
+// tilt sensor: each sample goes through a low-pass, the axes that come out are
+// quantized with hysteresis, and they are refreshed at most 10 times a second,
+// so a steady hand is a steady command. The suit's own weight (main.js
+// SPEED_LERP) eases between the steps. Gestures still read every raw sample: a
+// punch is a spike, which all of this would erase.
+const TILT_SMOOTH_MS = 90; // low-pass on the raw angles (hand tremor, sensor noise)
+// Per sample rather than by the clock: serial reads hand over samples in bursts.
+const TILT_K = 1 - Math.exp(-SAMPLE_MS / TILT_SMOOTH_MS);
+const CONTROL_MS = 100; // the axes change at most 10x/s...
+const STEP = 0.05; // ...and in steps this big
+
+let tilt = null; // low-passed { pitch, roll }; null until the first sample
+let controls = { throttle: 0, climb: 0, dive: 0, yaw: 0 };
+let controlsAt = -Infinity; // when the controls were last refreshed
 
 function wrapDeg(a) {
   return ((((a + 180) % 360) + 360) % 360) - 180;
@@ -82,24 +102,70 @@ function clampAxis(v) {
   return Math.max(-1, Math.min(1, v));
 }
 
-// Flight axes from the current (or provided) IMU sample.
-export function readGloveAxes(sample = latest) {
-  const climb = lobe(sample.roll, ROLL_CLIMB);
-  // Palm up is a nose dive, not a gentle descent: the flight model tips the
-  // suit head-down and flies it down the slope. Easing into the pose gives a
-  // shallow dive, so there is still a way to come down gently.
-  const dive = lobe(sample.roll, ROLL_DOWN);
-  const throttle = lobe(sample.roll, ROLL_FWD);
-  const pitchCmd = Math.abs(sample.pitch) < PITCH_DEADZONE ? 0 : sample.pitch;
-  // Increase pitch → yaw left; decrease pitch → yaw right.
-  const yaw = clampAxis(-pitchCmd / PITCH_YAW_SCALE);
+// Tilt in degrees -> axis: nothing inside the dead zone, then linear up to
+// full. It starts from zero at the dead zone's edge, so a hand resting near
+// that edge doesn't flick a quarter-rate turn on and off.
+function tiltAxis(deg, deadzone, full) {
+  const mag = Math.max(0, Math.abs(deg) - deadzone) / (full - deadzone);
+  return clampAxis(Math.sign(deg) * mag);
+}
+
+function quantize(v) {
+  return Number((Math.round(v / STEP) * STEP).toFixed(2)) || 0; // || 0 drops -0
+}
+
+// Quantize with hysteresis: move to a new step only once the input has clearly
+// left the current one, so a hand held near a step boundary doesn't flicker
+// between two values.
+function settle(raw, current) {
+  return Math.abs(raw - current) < STEP * 0.75 ? current : quantize(raw);
+}
+
+// Feed one sample through the low-pass and, when they are due, refresh the
+// controls.
+function steady(sample, now) {
+  if (!tilt) {
+    tilt = { pitch: sample.pitch, roll: sample.roll };
+  } else {
+    tilt.pitch += (sample.pitch - tilt.pitch) * TILT_K;
+    // Roll lives on a circle, and palm-down (the resting pose) sits right on
+    // its ±180 seam: averaging 179 and -179 the plain way would read palm-up.
+    tilt.roll = wrapDeg(tilt.roll + wrapDeg(sample.roll - tilt.roll) * TILT_K);
+  }
+  if (now - controlsAt < CONTROL_MS) return;
+  controlsAt = now;
+
+  controls = {
+    throttle: settle(lobe(tilt.roll, ROLL_FWD), controls.throttle),
+    climb: settle(lobe(tilt.roll, ROLL_CLIMB), controls.climb),
+    // Palm up is a nose dive, not a gentle descent: the flight model tips the
+    // suit head-down and flies it down the slope. Easing into the pose gives a
+    // shallow dive, so there is still a way to come down gently.
+    dive: settle(lobe(tilt.roll, ROLL_DOWN), controls.dive),
+    // Increase pitch → yaw left; decrease pitch → yaw right.
+    yaw: settle(-tiltAxis(tilt.pitch, PITCH_DEADZONE, PITCH_YAW_SCALE), controls.yaw),
+  };
+}
+
+function resetSteady() {
+  tilt = null;
+  controls = { throttle: 0, climb: 0, dive: 0, yaw: 0 };
+  controlsAt = -Infinity;
+}
+
+// Flight axes from the glove: the steadied controls, and the attitude the suit
+// (and the camera) should show. `roll` / `pitch` are the low-passed IMU angles
+// all of it came from. The attitude follows those directly rather than the
+// stepped controls, so the view stays fluid. (Boost is Shift on the keyboard.)
+export function readGloveAxes() {
+  const roll = tilt ? tilt.roll : 0;
+  const pitch = tilt ? tilt.pitch : 0;
   return {
-    throttle,
-    climb,
-    dive,
-    yaw,
-    visualPitch: climb * 18 - dive * 60,
-    visualRoll: -sample.pitch,
+    ...controls,
+    visualPitch: tilt ? lobe(roll, ROLL_CLIMB) * 18 - lobe(roll, ROLL_DOWN) * 60 : 0,
+    visualRoll: -pitch || 0, // || 0 drops -0
+    roll,
+    pitch,
   };
 }
 
@@ -151,6 +217,7 @@ function noteJerk(sample, now) {
 function setConnected(value) {
   if (connected === value) return;
   connected = value;
+  resetSteady(); // a fresh link starts from its own first sample
   if (!value) {
     resetFist();
     latest = { pitch: 0, roll: 0, ax: 0, ay: 0, az: 0, fist: false };
@@ -186,6 +253,7 @@ function noteSample(sample) {
   }
   fistDown = punching;
   noteJerk(sample, now);
+  steady(sample, now);
 
   latest = sample;
   onGloveData(sample);

@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:ai": "node src/ai/observation.test.js"
+    "test:ai": "node src/ai/observation.test.js",
+    "test:glove": "node src/input/glove.test.js",
+    "test:voice": "node vite.config.test.js && node src/audio/squeeze.test.js"
   },
   "dependencies": {
     "cesium": "^1.115.0",

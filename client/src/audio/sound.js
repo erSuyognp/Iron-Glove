@@ -154,10 +154,10 @@ export function voiceOutput() {
   return master;
 }
 
-/** Pull the effects down while JARVIS talks. */
+/** Pull the effects down while JARVIS talks: well down, a boost's roar buries a voice. */
 export function duck(on) {
   if (!ctx) return;
-  bus.gain.setTargetAtTime(on ? 0.45 : 1, ctx.currentTime, 0.12);
+  bus.gain.setTargetAtTime(on ? 0.3 : 1, ctx.currentTime, 0.12);
 }
 
 export function isMuted() {

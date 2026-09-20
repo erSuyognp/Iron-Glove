@@ -15,7 +15,7 @@ const FIRE_COUNT = 5;
 const CANDIDATES = 18; // sampled for ground height; the best FIRE_COUNT are used
 const RING_INNER = 0.22; // fires sit between these shares of the site radius
 const RING_OUTER = 0.62;
-const POLYGON_RADIUS = 360; // m, for a site with a polygon instead of a radius
+const POLYGON_RADIUS = 360; // m, for a site with no radius of its own (Homewood)
 const MIN_SPACING = 120; // m between fires
 const WATER_LEVEL_BAND = 2.5; // m above the lowest sample that still counts as open water
 

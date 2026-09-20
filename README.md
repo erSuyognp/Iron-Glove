@@ -50,6 +50,8 @@ Buildings and the ground stop the suit (no damage). **PULL UP** flashes below
 VITE_CESIUM_TOKEN=...        # required
 VITE_GOOGLE_MAPS_API_KEY=... # optional: stream tiles direct from Google
 ELEVENLABS_API_KEY=...       # optional: real sound effects + JARVIS voice
+ELEVENLABS_MODEL=...         # optional: TTS model (default: one the voice is rated for)
+ELEVENLABS_RECORD=off        # optional: play the saved JARVIS lines, buy no new ones
 GROK_API_KEY=...             # optional: AI voice commands
 VITE_SPACETIMEDB_HOST=ws://127.0.0.1:3000   # optional (this is the default)
 VITE_SPACETIMEDB_DB_NAME=iron-glove         # optional (this is the default)

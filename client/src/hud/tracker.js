@@ -25,17 +25,17 @@ const BODY_BLUE = 0x1a5ec4;
 const GLOW_BLUE = 0x1f6fff;
 const EDGE_BLUE = 0x9fd0ff;
 
-// Shape, in metres (the suit is 11 m tall); ARROW_LENGTH sizes all of it. A
-// shaft behind the head keeps the direction unambiguous even when the arrow
-// points back toward the camera, where a plain dart's far wing can pass for
-// its tip.
+// Shape, in metres (the suit is 11 m tall); the length sizes all of it, the
+// rest are shares of that. A shaft behind the head keeps the direction
+// unambiguous even when the arrow points back toward the camera, where a plain
+// dart's far wing can pass for its tip.
 const ARROW_LENGTH = 5.4; // tip to tail
-const HEAD_LENGTH = 0.49 * ARROW_LENGTH; // tip to the barbs
-const HEAD_WIDTH = 0.71 * ARROW_LENGTH; // across the barbs
-const BARB_SWEEP = 0.1 * ARROW_LENGTH; // how far the barbs sweep back past the throat
-const SHAFT_WIDTH = 0.24 * ARROW_LENGTH;
-const ARROW_THICKNESS = 0.1 * ARROW_LENGTH; // plus the bevel
-const BEVEL = 0.033 * ARROW_LENGTH;
+const HEAD_LENGTH = 0.49; // tip to the barbs
+const HEAD_WIDTH = 0.71; // across the barbs
+const BARB_SWEEP = 0.1; // how far the barbs sweep back past the throat
+const SHAFT_WIDTH = 0.24;
+const ARROW_THICKNESS = 0.1; // plus the bevel
+const BEVEL = 0.033;
 
 const RIDE_HEIGHT = 20; // m above the boots of the suit it rides: clear of the head and name tag
 const AIM_HEIGHT = 5.5; // m above a suit's boots: mid-suit, where distances are measured
@@ -66,30 +66,65 @@ function formatClimb(dAlt) {
   return `${dAlt > 0 ? '▲' : '▼'} ${Math.round(Math.abs(dAlt))} m`;
 }
 
-// An arrow lying flat: tip on +X, face normal +Y.
-function arrowGeometry() {
-  const half = ARROW_LENGTH / 2;
-  const barbX = half - HEAD_LENGTH;
-  const throatX = barbX + BARB_SWEEP;
+/** An arrow lying flat, `length` metres tip to tail: tip on +X, face normal +Y. */
+export function arrowGeometry(length = ARROW_LENGTH) {
+  const half = length / 2;
+  const barbX = half - HEAD_LENGTH * length;
+  const throatX = barbX + BARB_SWEEP * length;
+  const headHalf = (HEAD_WIDTH * length) / 2;
+  const shaftHalf = (SHAFT_WIDTH * length) / 2;
+  const thickness = ARROW_THICKNESS * length;
   const shape = new THREE.Shape();
   shape.moveTo(half, 0);
-  shape.lineTo(barbX, HEAD_WIDTH / 2);
-  shape.lineTo(throatX, SHAFT_WIDTH / 2);
-  shape.lineTo(-half, SHAFT_WIDTH / 2);
-  shape.lineTo(-half, -SHAFT_WIDTH / 2);
-  shape.lineTo(throatX, -SHAFT_WIDTH / 2);
-  shape.lineTo(barbX, -HEAD_WIDTH / 2);
+  shape.lineTo(barbX, headHalf);
+  shape.lineTo(throatX, shaftHalf);
+  shape.lineTo(-half, shaftHalf);
+  shape.lineTo(-half, -shaftHalf);
+  shape.lineTo(throatX, -shaftHalf);
+  shape.lineTo(barbX, -headHalf);
   shape.closePath();
   const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: ARROW_THICKNESS,
+    depth: thickness,
     bevelEnabled: true,
-    bevelThickness: BEVEL,
-    bevelSize: BEVEL,
+    bevelThickness: BEVEL * length,
+    bevelSize: BEVEL * length,
     bevelSegments: 1,
   });
-  geo.translate(0, 0, -ARROW_THICKNESS / 2);
+  geo.translate(0, 0, -thickness / 2);
   geo.rotateX(-Math.PI / 2);
   return geo;
+}
+
+// How an arrow is turned to point along a world direction and still read from
+// the chase camera. Shared with the drone pointers (hud/dronePointers.js).
+const aimScratch = new Cesium.Cartesian3();
+const aimFace = new THREE.Vector3();
+const aimToLens = new THREE.Vector3();
+const aimSide = new THREE.Matrix4();
+const aimCross = new THREE.Vector3();
+
+/** The ECEF direction `dir` in camera space, as seen from LIFT higher than the camera. */
+export function liftedAxis(viewMatrix, dir, out) {
+  Cesium.Matrix4.multiplyByPointAsVector(viewMatrix, dir, aimScratch);
+  return out.set(aimScratch.x, aimScratch.y, aimScratch.z).applyAxisAngle(X_AXIS, LIFT).normalize();
+}
+
+/**
+ * The rotation of an arrow at camera-space `pos` whose tip lies along `axis`
+ * (from liftedAxis). Its face is up in the same lifted view, so it lies like a
+ * real arrow seen from above; leaning it toward the lens as well keeps it from
+ * turning edge-on when the target is straight above or below. `up` is the
+ * local vertical in ECEF.
+ */
+export function arrowFacing(viewMatrix, up, axis, pos, quat) {
+  Cesium.Matrix4.multiplyByPointAsVector(viewMatrix, up, aimScratch);
+  aimFace.set(aimScratch.x, aimScratch.y, aimScratch.z).applyAxisAngle(X_AXIS, LIFT);
+  aimFace.addScaledVector(axis, -aimFace.dot(axis));
+  aimToLens.copy(pos).negate().normalize();
+  aimToLens.addScaledVector(axis, -aimToLens.dot(axis));
+  aimFace.addScaledVector(aimToLens, FACE_TO_LENS).normalize();
+  aimCross.crossVectors(axis, aimFace);
+  return quat.setFromRotationMatrix(aimSide.makeBasis(axis, aimFace, aimCross));
 }
 
 /**
@@ -224,10 +259,6 @@ export function createTracker(overlay) {
   const scratch = new Cesium.Cartesian3();
   const pos = new THREE.Vector3();
   const axis = new THREE.Vector3();
-  const face = new THREE.Vector3();
-  const toLens = new THREE.Vector3();
-  const side = new THREE.Vector3();
-  const basis = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
   const scale = new THREE.Vector3();
   const ndc = new THREE.Vector3();
@@ -250,21 +281,9 @@ export function createTracker(overlay) {
     }
     arrow.visible = true;
 
-    // Tip along the lifted direction to the target.
-    Cesium.Matrix4.multiplyByPointAsVector(viewMatrix, dir, scratch);
-    axis.set(scratch.x, scratch.y, scratch.z).applyAxisAngle(X_AXIS, LIFT).normalize();
-    // Face up in the same lifted view, so it lies like a real arrow seen from
-    // above. Leaning it toward the lens as well keeps it from turning edge-on
-    // when the target is straight above or below.
-    Cesium.Matrix4.multiplyByPointAsVector(viewMatrix, up, scratch);
-    face.set(scratch.x, scratch.y, scratch.z).applyAxisAngle(X_AXIS, LIFT);
-    face.addScaledVector(axis, -face.dot(axis));
-    toLens.copy(pos).negate().normalize();
-    toLens.addScaledVector(axis, -toLens.dot(axis));
-    face.addScaledVector(toLens, FACE_TO_LENS).normalize();
-    side.crossVectors(axis, face);
-    basis.makeBasis(axis, face, side);
-    quat.setFromRotationMatrix(basis);
+    // Tip along the lifted direction to the target, face up in that same view.
+    liftedAxis(viewMatrix, dir, axis);
+    arrowFacing(viewMatrix, up, axis, pos, quat);
 
     // Grows in as it fades in.
     const size = 0.7 + 0.3 * fade;
